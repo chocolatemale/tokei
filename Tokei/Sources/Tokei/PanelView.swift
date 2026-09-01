@@ -3636,14 +3636,33 @@ struct PanelView: View {
           GIT_CONFIG_NOSYSTEM GIT_ASKPASS SSH_ASKPASS
         export GIT_NO_REPLACE_OBJECTS=1
         mkdir -p ~/.tokei
+        remote=\(quotedRemote)
+        case "$remote" in
+          -*) echo "Tokei setup error: 仓库地址不能以 - 开头" >&2; exit 1 ;;
+        esac
         if [ ! -d ~/.tokei/sync/.git ]; then
           /usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false \
             -c core.fsmonitor=false \
-            clone \(quotedRemote) ~/.tokei/sync
+            clone -- "$remote" ~/.tokei/sync
         fi
-        curl -fsSL https://dl.lanshuagent.com/tokei/usage.30s.py -o ~/.tokei/usage.30s.py
+        if [ ! -f ~/.tokei/usage.30s.py ]; then
+          /usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false \
+            -c core.fsmonitor=false \
+            clone --depth 1 -- https://github.com/chocolatemale/tokei.git ~/.tokei/src
+          cp ~/.tokei/src/usage.30s.py ~/.tokei/usage.30s.py
+          [ -f ~/.tokei/src/pricing.json ] && cp ~/.tokei/src/pricing.json ~/.tokei/pricing.json
+          [ -f ~/.tokei/src/pricing_overrides.json ] && cp ~/.tokei/src/pricing_overrides.json ~/.tokei/pricing_overrides.json
+        fi
+        device_id="$(hostname -s)"
+        python3 -c '
+        import sys
+        value = sys.argv[1].strip()
+        if (not value or value in (".", "..") or len(value) > 128
+                or any(ord(ch) < 32 or ch in "/\\\\" for ch in value)):
+            raise SystemExit("invalid device_id")
+        ' "$device_id" || { echo "Tokei setup error: 无效的设备名" >&2; exit 1; }
         cat > ~/.tokei/config.json <<JSON
-        {"sync_dir":"~/.tokei/sync","device_id":"$(hostname -s)","auto_sync":true,"sync_interval":30}
+        {"sync_dir":"~/.tokei/sync","device_id":"$device_id","auto_sync":true,"sync_interval":30}
         JSON
         cat > ~/.tokei/tokei-sync.sh <<'SH'
         #!/bin/sh

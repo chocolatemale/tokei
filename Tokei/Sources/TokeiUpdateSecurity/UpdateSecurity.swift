@@ -96,6 +96,10 @@ public enum UpdateInstaller {
         [ -f "$candidate/Contents/MacOS/$executable" ] || return 1
         [ -x "$candidate/Contents/MacOS/$executable" ] || return 1
         /usr/bin/codesign --verify --deep --strict "$candidate" >/dev/null 2>&1 || return 1
+        local cs_info
+        cs_info=$(/usr/bin/codesign -dv --verbose=4 "$candidate" 2>&1) || return 1
+        printf '%s\n' "$cs_info" | /usr/bin/grep -q 'Signature=adhoc' && return 1
+        printf '%s\n' "$cs_info" | /usr/bin/grep -q 'TeamIdentifier=8A52V3MFHD' || return 1
     }
 
     fail() {
@@ -118,7 +122,6 @@ public enum UpdateInstaller {
     /bin/mv "$APP_PATH" "$BACKUP_PATH" || fail
     OLD_MOVED=1
     /bin/cp -R "$MOUNT_DIR/Tokei.app" "$APP_PATH" || fail
-    /usr/bin/xattr -cr "$APP_PATH" >/dev/null 2>&1 || true
     validate_app "$APP_PATH" || fail
     if ! /usr/bin/hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1; then
         /bin/sleep 1
@@ -142,15 +145,21 @@ public enum ShellEscaping {
 public enum UpdateSecurity {
     private static let metadataHosts: Set<String> = [
         "api.github.com",
-        "dl.lanshuagent.com",
     ]
     private static let downloadSourceHosts: Set<String> = [
-        "dl.lanshuagent.com",
         "github.com",
     ]
     private static let downloadRedirectHosts: Set<String> = [
         "release-assets.githubusercontent.com",
     ]
+    private static let githubOwner = "chocolatemale"
+    private static let githubRepo = "tokei"
+    public static let requiredTeamIdentifier = "8A52V3MFHD"
+
+    public static func isTrustedUpdateIdentity(codesignVerboseOutput: String) -> Bool {
+        !codesignVerboseOutput.contains("Signature=adhoc")
+            && codesignVerboseOutput.contains("TeamIdentifier=\(requiredTeamIdentifier)")
+    }
 
     public static func releaseTag(from json: [String: Any]) -> String? {
         guard let raw = (json["tag_name"] ?? json["version"]) as? String else { return nil }
@@ -176,6 +185,7 @@ public enum UpdateSecurity {
         newerThan localVersion: String
     ) -> UpdateRelease? {
         releases.reduce(nil) { current, candidate in
+            guard isAllowedDownloadSourceURL(candidate.downloadURL) else { return current }
             guard isNewerVersion(candidate.tag, than: localVersion) else { return current }
             guard let current else { return candidate }
             return isNewerVersion(candidate.tag, than: current.tag) ? candidate : current
@@ -183,21 +193,12 @@ public enum UpdateSecurity {
     }
 
     public static func validatedRelease(from json: [String: Any]) -> UpdateRelease? {
-        guard let tag = releaseTag(from: json) else { return nil }
-
-        let urlString: String?
-        let digestString: String?
-        if let assets = json["assets"] as? [[String: Any]],
-           let asset = assets.first(where: isDMGAsset) {
-            urlString = asset["browser_download_url"] as? String
-            digestString = (asset["digest"] ?? asset["sha256"]) as? String
-        } else {
-            urlString = (json["download_url"] ?? json["url"]) as? String
-            digestString = (json["sha256"] ?? json["digest"]) as? String
-        }
-
-        guard let rawURL = urlString,
-              let url = URL(string: rawURL),
+        guard let tag = releaseTag(from: json),
+              let assets = json["assets"] as? [[String: Any]],
+              let asset = assets.first(where: isDMGAsset),
+              let urlString = asset["browser_download_url"] as? String,
+              let digestString = (asset["digest"] ?? asset["sha256"]) as? String,
+              let url = URL(string: urlString),
               isAllowedDownloadSourceURL(url),
               url.pathExtension.lowercased() == "dmg",
               let digest = normalizedSHA256(digestString) else {
@@ -207,11 +208,13 @@ public enum UpdateSecurity {
     }
 
     public static func isAllowedMetadataURL(_ url: URL) -> Bool {
-        isAllowedHTTPSURL(url, hosts: metadataHosts)
+        guard isAllowedHTTPSURL(url, hosts: metadataHosts) else { return false }
+        return isGitHubAPIRepoPath(url)
     }
 
     public static func isAllowedDownloadSourceURL(_ url: URL) -> Bool {
-        isAllowedHTTPSURL(url, hosts: downloadSourceHosts)
+        guard isAllowedHTTPSURL(url, hosts: downloadSourceHosts) else { return false }
+        return isGitHubReleaseAssetPath(url)
     }
 
     public static func isAllowedDownloadResponseURL(_ url: URL) -> Bool {
@@ -265,6 +268,25 @@ public enum UpdateSecurity {
         guard !components.isEmpty else { return nil }
         let numbers = components.compactMap { Int($0) }
         return numbers.count == components.count ? numbers : nil
+    }
+
+    private static func isGitHubAPIRepoPath(_ url: URL) -> Bool {
+        let parts = url.path.split(separator: "/").map(String.init)
+        return parts.count >= 3
+            && parts[0] == "repos"
+            && parts[1] == githubOwner
+            && parts[2] == githubRepo
+    }
+
+    private static func isGitHubReleaseAssetPath(_ url: URL) -> Bool {
+        let parts = url.path.split(separator: "/").map(String.init)
+        return parts.count == 6
+            && parts[0] == githubOwner
+            && parts[1] == githubRepo
+            && parts[2] == "releases"
+            && parts[3] == "download"
+            && !parts[4].isEmpty
+            && parts[5].lowercased().hasSuffix(".dmg")
     }
 
     private static func isAllowedHTTPSURL(_ url: URL, hosts: Set<String>) -> Bool {

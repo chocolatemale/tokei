@@ -11,7 +11,7 @@
 - 每台设备独立运行 `usage.30s.py` 采集本机 AI 用量，生成 `<device_id>.json`
 - 所有设备通过一个 **私有 Git 仓库** (`~/.tokei/sync/`) 同步数据
 - Mac 端 Tokei.app 聚合所有设备数据展示；Linux 端通过 crontab 自动采集+推送
-- 采集脚本从 `https://dl.lanshuagent.com/tokei/usage.30s.py` 下载
+- 采集脚本从本仓库检出复制，或 `git clone https://github.com/chocolatemale/tokei.git` 后复制 `usage.30s.py`。不要从同步仓库或 CDN 下载。
 
 ## 执行流程
 
@@ -34,7 +34,13 @@ crontab -l 2>/dev/null | grep -q tokei && echo "✅ crontab 已配置" || echo "
 
 ```bash
 mkdir -p ~/.tokei
-curl -fsSL https://dl.lanshuagent.com/tokei/usage.30s.py -o ~/.tokei/usage.30s.py
+# 采集脚本来自 chocolatemale/tokei 检出，不要从同步仓库复制
+if [ -f ./usage.30s.py ]; then
+  cp ./usage.30s.py ~/.tokei/usage.30s.py
+else
+  git clone --depth 1 -- https://github.com/chocolatemale/tokei.git ~/.tokei/src
+  cp ~/.tokei/src/usage.30s.py ~/.tokei/usage.30s.py
+fi
 chmod +x ~/.tokei/usage.30s.py
 echo "✅ 采集脚本已安装"
 ```
@@ -48,17 +54,21 @@ echo "✅ 采集脚本已安装"
 ```bash
 # 有 gh CLI
 gh repo create tokei-sync --private
-git clone $(gh repo view tokei-sync --json sshUrl -q .sshUrl) ~/.tokei/sync
+SYNC_REPO=$(gh repo view tokei-sync --json sshUrl -q .sshUrl)
+case "$SYNC_REPO" in -*) echo "仓库地址不能以 - 开头" >&2; exit 1 ;; esac
+git clone -- "$SYNC_REPO" ~/.tokei/sync
 
 # 没有 gh CLI — 提示用户手动在 GitHub 创建私有仓库 tokei-sync，然后：
-git clone git@github.com:<用户名>/tokei-sync.git ~/.tokei/sync
+SYNC_REPO="git@github.com:<用户名>/tokei-sync.git"
+case "$SYNC_REPO" in -*) echo "仓库地址不能以 - 开头" >&2; exit 1 ;; esac
+git clone -- "$SYNC_REPO" ~/.tokei/sync
 ```
 
 初始化并推送：
 
 ```bash
 cd ~/.tokei/sync
-git add -A && git commit -m "init" && git push -u origin main
+git commit --allow-empty -m "init" && git push -u origin main
 ```
 
 **场景 B — 加入已有仓库（其他设备已配好）：**
@@ -66,13 +76,21 @@ git add -A && git commit -m "init" && git push -u origin main
 询问用户仓库地址，然后：
 
 ```bash
-git clone <仓库地址> ~/.tokei/sync
+case "$SYNC_REPO" in -*) echo "仓库地址不能以 - 开头" >&2; exit 1 ;; esac
+git clone -- "$SYNC_REPO" ~/.tokei/sync
 ```
 
 ### 步骤 4: 写入本机配置
 
 ```bash
 DEVICE_NAME=$(hostname -s)
+python3 -c '
+import sys
+value = sys.argv[1].strip()
+if (not value or value in (".", "..") or len(value) > 128
+        or any(ord(ch) < 32 or ch in "/\\" for ch in value)):
+    raise SystemExit("无效的设备名")
+' "$DEVICE_NAME"
 cat > ~/.tokei/config.json <<EOF
 {
   "device_id": "$DEVICE_NAME",
@@ -89,7 +107,7 @@ echo "✅ 本机配置完成: $DEVICE_NAME"
 Mac 端由 Tokei.app 负责采集，跳过此步。仅 Linux/远程服务器需要：
 
 ```bash
-(crontab -l 2>/dev/null; echo '*/30 * * * * cd ~/.tokei/sync && python3 ~/.tokei/usage.30s.py --json >/dev/null && git pull -q && git add -A && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -
+(crontab -l 2>/dev/null; echo '*/30 * * * * cd ~/.tokei/sync && python3 ~/.tokei/usage.30s.py --json >/dev/null && device_file="./$(python3 -c "import json;print(json.load(open(\"$HOME/.tokei/config.json\"))[\"device_id\"])").json" && git pull -q && git add -- "$device_file" && git diff --cached --quiet || git commit -qm sync && git push -q') | crontab -
 echo "✅ crontab 已配置，每 30 分钟自动采集并同步"
 ```
 
@@ -104,7 +122,7 @@ DEVICE_NAME=$(cat ~/.tokei/config.json | python3 -c 'import sys,json;print(json.
 [ -f ~/.tokei/sync/${DEVICE_NAME}.json ] && echo "✅ 数据文件已生成" || echo "❌ 数据文件未找到"
 
 # 推送
-cd ~/.tokei/sync && git add -A && git diff --cached --quiet || git commit -m "sync $DEVICE_NAME" && git push
+cd ~/.tokei/sync && git add -- "./${DEVICE_NAME}.json" && git diff --cached --quiet || git commit -m "sync $DEVICE_NAME" && git push
 echo ""
 echo "═══ 完成 ═══"
 echo "  本机: $DEVICE_NAME"

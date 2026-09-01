@@ -115,10 +115,10 @@ tw = bbox[2] - bbox[0]
 draw.text(((W - tw) // 2, arrow_y - 38), txt,
           fill=(120, 100, 90, 200), font=title_font)
 
-# ── Code box with xattr command (right side, below arrow) ──
-cmd_label = "首次被拦截? 终端运行:"
-cmd_text = "sudo xattr -rd com.apple.quarantine"
-cmd_app = "/Applications/Tokei.app"
+# ── Hint if Gatekeeper blocks first launch (no quarantine-strip command) ──
+cmd_label = "首次被拦截?"
+cmd_text = "系统设置 → 隐私与安全性"
+cmd_app = "允许打开，勿清隔离属性"
 
 box_x = 265
 box_y = arrow_y + 45

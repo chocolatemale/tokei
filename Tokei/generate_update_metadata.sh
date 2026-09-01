@@ -20,5 +20,7 @@ if [ ! -f "$DMG_PATH" ]; then
 fi
 
 SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
-printf '{\n  "tag_name": "v%s",\n  "download_url": "https://dl.lanshuagent.com/tokei/Tokei-v%s.dmg",\n  "sha256": "%s"\n}\n' \
-    "$VERSION" "$VERSION" "$SHA256" > "$OUTPUT_PATH"
+# SHA-256 is a hash of bytes, not identity. In-app updates use GitHub release
+# metadata plus Developer ID Team ID 8A52V3MFHD at install time.
+printf '{\n  "tag_name": "v%s",\n  "download_url": "https://github.com/chocolatemale/tokei/releases/download/v%s/Tokei-v%s.dmg",\n  "sha256": "%s"\n}\n' \
+    "$VERSION" "$VERSION" "$VERSION" "$SHA256" > "$OUTPUT_PATH"

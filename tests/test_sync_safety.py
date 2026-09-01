@@ -98,5 +98,55 @@ class SyncSnapshotSafetyTests(unittest.TestCase):
             self.assertEqual(USAGE.write_sync_snapshot(), 1)
 
 
+SHIPPED_INSTALL_PATHS = [
+    "install.sh",
+    "README.md",
+    "skills/tokei-setup.md",
+    "tokei-collector-skill.md",
+    "Tokei/Sources/Tokei/PanelView.swift",
+]
+CDN_COLLECTOR = "https://dl.lanshuagent.com/tokei/usage.30s.py"
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class CollectorInstallSafetyTests(unittest.TestCase):
+    def test_shipped_install_paths_do_not_use_cdn_curl_or_git_add_all(self):
+        for rel in SHIPPED_INSTALL_PATHS:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertNotIn(
+                "git add -A",
+                text,
+                f"{rel} must not run git add -A",
+            )
+            self.assertNotIn(
+                CDN_COLLECTOR,
+                text,
+                f"{rel} must not curl unsigned usage.30s.py from the CDN",
+            )
+
+    def test_install_sh_copies_collector_from_checkout_not_sync_repo(self):
+        text = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertNotIn("git add -A", text)
+        self.assertNotIn(CDN_COLLECTOR, text)
+        self.assertNotIn('"$SYNC_DIR/$fname"', text)
+        self.assertNotIn("$SYNC_DIR/usage.30s.py", text)
+        self.assertIn('dirname "$0"', text)
+        self.assertIn("chocolatemale/tokei", text)
+        self.assertIn('git add -- "$device_file"', text)
+        self.assertIn('case "$REPO" in', text)
+        self.assertIn("-*)", text)
+
+    def test_linux_setup_command_does_not_git_add_all_or_curl_cdn(self):
+        panel = (ROOT / "Tokei/Sources/Tokei/PanelView.swift").read_text(encoding="utf-8")
+        start = panel.find("func linuxSetupCommand")
+        self.assertGreater(start, 0, "linuxSetupCommand should exist")
+        body = panel[start:]
+        self.assertNotIn("git add -A", body)
+        self.assertNotIn(CDN_COLLECTOR, body)
+        self.assertIn("chocolatemale/tokei", body)
+        self.assertIn("git add --", body)
+
+
 if __name__ == "__main__":
     unittest.main()
+

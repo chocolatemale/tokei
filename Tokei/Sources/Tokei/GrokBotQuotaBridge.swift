@@ -45,7 +45,6 @@ enum GrokBotQuotaBridge {
 
     private struct KeychainSecret {
         let password: Data
-        let item: SecKeychainItem?
     }
 
     static func runIfRequested() -> Bool {
@@ -74,19 +73,11 @@ enum GrokBotQuotaBridge {
 
     static func authorize() -> Bool {
         updateAuthorizationMarker(enabled: false)
-        guard let result = credentialResult(
+        guard credential(
             allowInteraction: true,
-            requireMarker: false,
-            returnKeychainItem: true
-        ) else { return false }
-
-        // "Allow" may grant only this process one read. Persist the user's explicit
-        // authorization by adding this app to the item's decrypt ACL, then let a
-        // fresh process verify that the permission really survived.
-        if let item = result.keychainItem {
-            _ = persistCurrentAppAccess(to: item)
-        }
-        return true
+            requireMarker: false
+        ) != nil else { return false }
+        return verifyPersistentAuthorization()
     }
 
     static func verifyPersistentAuthorization() -> Bool {
@@ -132,25 +123,10 @@ enum GrokBotQuotaBridge {
         allowInteraction: Bool,
         requireMarker: Bool
     ) -> Credential? {
-        credentialResult(
-            allowInteraction: allowInteraction,
-            requireMarker: requireMarker,
-            returnKeychainItem: false
-        )?.credential
-    }
-
-    private static func credentialResult(
-        allowInteraction: Bool,
-        requireMarker: Bool,
-        returnKeychainItem: Bool
-    ) -> (credential: Credential, keychainItem: SecKeychainItem?)? {
         if requireMarker, !FileManager.default.fileExists(atPath: authorizationMarkerURL.path) {
             return nil
         }
-        guard let secret = safeStoragePassword(
-            allowInteraction: allowInteraction,
-            returnKeychainItem: returnKeychainItem
-        ) else {
+        guard let secret = safeStoragePassword(allowInteraction: allowInteraction) else {
             if !allowInteraction { updateAuthorizationMarker(enabled: false) }
             return nil
         }
@@ -158,12 +134,9 @@ enum GrokBotQuotaBridge {
               let token = stored.token,
               let identity = jwtIdentity(token),
               identity.expiresAt > Date().timeIntervalSince1970 + 60 else { return nil }
-        return (
-            Credential(
-                token: token,
-                machineID: stored.machineID
-            ),
-            secret.item
+        return Credential(
+            token: token,
+            machineID: stored.machineID
         )
     }
 
@@ -392,8 +365,7 @@ enum GrokBotQuotaBridge {
     }
 
     private static func safeStoragePassword(
-        allowInteraction: Bool,
-        returnKeychainItem: Bool
+        allowInteraction: Bool
     ) -> KeychainSecret? {
         var previousInteraction = DarwinBoolean(false)
         let interactionStatus = SecKeychainGetUserInteractionAllowed(&previousInteraction)
@@ -411,9 +383,6 @@ enum GrokBotQuotaBridge {
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecReturnData as String: true,
         ]
-        if returnKeychainItem {
-            query[kSecReturnRef as String] = true
-        }
         if !allowInteraction {
             let context = LAContext()
             context.interactionNotAllowed = true
@@ -424,81 +393,14 @@ enum GrokBotQuotaBridge {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status == errSecSuccess else { return nil }
         if let data = item as? Data, !data.isEmpty {
-            return KeychainSecret(password: data, item: nil)
+            return KeychainSecret(password: data)
         }
         guard let values = item as? [String: Any],
               let data = values[kSecValueData as String] as? Data,
               !data.isEmpty else {
             return nil
         }
-        return KeychainSecret(
-            password: data,
-            item: keychainItem(from: values[kSecValueRef as String])
-        )
-    }
-
-    private static func keychainItem(from value: Any?) -> SecKeychainItem? {
-        guard let value else { return nil }
-        let reference = value as CFTypeRef
-        guard CFGetTypeID(reference) == SecKeychainItemGetTypeID() else { return nil }
-        return unsafeBitCast(reference, to: SecKeychainItem.self)
-    }
-
-    private static func persistCurrentAppAccess(to item: SecKeychainItem) -> Bool {
-        guard let executablePath = Bundle.main.executablePath else { return false }
-        var trustedApp: SecTrustedApplication?
-        let trustedStatus = executablePath.withCString {
-            SecTrustedApplicationCreateFromPath($0, &trustedApp)
-        }
-        guard trustedStatus == errSecSuccess, let trustedApp else { return false }
-
-        var access: SecAccess?
-        guard SecKeychainItemCopyAccess(item, &access) == errSecSuccess,
-              let access else { return false }
-        var aclList: CFArray?
-        guard SecAccessCopyACLList(access, &aclList) == errSecSuccess,
-              let acls = aclList as? [SecACL] else { return false }
-
-        var changed = false
-        for acl in acls {
-            let authorizations = SecACLCopyAuthorizations(acl) as NSArray
-            guard authorizations.contains(kSecACLAuthorizationDecrypt) else { continue }
-
-            var applicationList: CFArray?
-            var description: CFString?
-            var prompt = SecKeychainPromptSelector(rawValue: 0)
-            guard SecACLCopyContents(
-                acl,
-                &applicationList,
-                &description,
-                &prompt
-            ) == errSecSuccess,
-                var applications = applicationList as? [SecTrustedApplication] else {
-                return false
-            }
-
-            if applications.contains(where: { trustedApplicationPath($0) == executablePath }) {
-                return true
-            }
-            applications.append(trustedApp)
-            guard SecACLSetContents(
-                acl,
-                applications as CFArray,
-                description ?? keychainService as CFString,
-                prompt
-            ) == errSecSuccess else { return false }
-            changed = true
-        }
-        guard changed else { return false }
-        return SecKeychainItemSetAccess(item, access) == errSecSuccess
-    }
-
-    private static func trustedApplicationPath(_ application: SecTrustedApplication) -> String? {
-        var data: CFData?
-        guard SecTrustedApplicationCopyData(application, &data) == errSecSuccess,
-              let raw = data as Data?,
-              let path = String(data: raw, encoding: .utf8) else { return nil }
-        return path.trimmingCharacters(in: .controlCharacters)
+        return KeychainSecret(password: data)
     }
 
     private static func activeCredential(

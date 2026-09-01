@@ -10,12 +10,12 @@
 安装 tokei-collector skill,同步仓库: <your-repo-url>,设备名: <server-name>
 ```
 
-Agent 执行以下命令即可:
+Agent 从 chocolatemale/tokei 检出运行 `install.sh`，不要 curl 未签名脚本，也不要从同步仓库复制 `usage.30s.py`。
 
 ```bash
-curl -sL https://raw.githubusercontent.com/<user>/tokei-sync/main/install.sh | bash -s -- \
-  --repo git@github.com:<user>/tokei-sync.git \
-  --name <server-name>
+git clone --depth 1 -- https://github.com/chocolatemale/tokei.git /tmp/tokei
+case "<your-repo-url>" in -*) echo "仓库地址不能以 - 开头" >&2; exit 1 ;; esac
+bash /tmp/tokei/install.sh --repo <your-repo-url> --name <server-name>
 ```
 
 ## 工作原理

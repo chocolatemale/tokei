@@ -114,7 +114,7 @@ Tokei 是一款 **macOS 菜单栏应用**，实时追踪 20+ 款 AI 编程工具
 
 1. 从 [GitHub Releases](https://github.com/cclank/tokei/releases/latest) 下载最新 DMG
 2. 打开 DMG，将 Tokei.app 拖入 Applications 文件夹
-3. 首次打开如被 macOS 拦截，在终端运行：`sudo xattr -rd com.apple.quarantine /Applications/Tokei.app`
+3. 如被 macOS 拦截，在「系统设置 → 隐私与安全性」中允许打开。不要清除隔离属性
 4. 打开 Tokei 即可
 
 <details>
@@ -131,7 +131,7 @@ open Tokei.app
 证书，让 Keychain 中的 Provider 密钥在重复构建后仍可访问；没有证书时会回退到
 ad-hoc 签名。可用 `TOKEI_CODESIGN_IDENTITY=- bash package.sh` 强制 ad-hoc，或用
 `TOKEI_CODESIGN_IDENTITY="证书名称" bash package.sh` 指定签名身份。
-这套自动探测只作用于本地源码构建；官方发布的 DMG 一律是 ad-hoc 签名。
+这套自动探测只作用于本地源码构建；官方发布的 DMG 使用 Developer ID Application: Wenzheng Liao (8A52V3MFHD) 签名。
 
 </details>
 
@@ -144,9 +144,16 @@ Tokei 支持通过私有 Git 仓库在多台机器间同步用量数据。
 **远程 Linux 服务器：**
 
 ```bash
-git clone <你的私有仓库> ~/.tokei/sync
-curl -fsSL https://dl.lanshuagent.com/tokei/usage.30s.py -o ~/.tokei/usage.30s.py
-echo '{"sync_dir":"~/.tokei/sync","device_id":"'$(hostname -s)'","auto_sync":true,"sync_interval":30}' > ~/.tokei/config.json
+mkdir -p ~/.tokei
+REPO="<你的私有仓库>"
+case "$REPO" in -*) echo "仓库地址不能以 - 开头" >&2; exit 1 ;; esac
+git clone -- "$REPO" ~/.tokei/sync
+# 采集脚本来自 chocolatemale/tokei 检出，不要从同步仓库或 CDN 复制
+git clone --depth 1 -- https://github.com/chocolatemale/tokei.git ~/.tokei/src
+cp ~/.tokei/src/usage.30s.py ~/.tokei/usage.30s.py
+DEVICE_ID="$(hostname -s)"
+case "$DEVICE_ID" in ""|"."|".."|*/*|*\\*|*$'\n'*|*$'\r'*) echo "无效的设备名" >&2; exit 1 ;; esac
+echo '{"sync_dir":"~/.tokei/sync","device_id":"'"$DEVICE_ID"'","auto_sync":true,"sync_interval":30}' > ~/.tokei/config.json
 cat > ~/.tokei/tokei-sync.sh <<'SH'
 #!/bin/bash
 set -euo pipefail

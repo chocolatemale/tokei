@@ -132,18 +132,15 @@ if command -v hdiutil &>/dev/null; then
     cp -R "$APP" "$MOUNT_DIR/"
     ln -s /Applications "$MOUNT_DIR/Applications"
 
-    # 安装说明（可复制的 xattr 命令）
     cat > "$MOUNT_DIR/安装说明.txt" <<'INSTALL'
 Tokei 安装说明
 ==============
 
 1. 将 Tokei.app 拖入 Applications 文件夹
 
-2. 首次打开如被 macOS 拦截，请在终端运行:
+2. 打开 Tokei.app
 
-   sudo xattr -rd com.apple.quarantine /Applications/Tokei.app
-
-3. 重新打开 Tokei.app 即可
+3. 如被 macOS 拦截，在「系统设置 → 隐私与安全性」中允许打开。不要清除隔离属性。
 
 更多信息: https://tokei.lanshuagent.com
 INSTALL

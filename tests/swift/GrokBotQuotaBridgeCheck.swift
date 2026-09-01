@@ -3,6 +3,8 @@ import Foundation
 @main
 struct GrokBotQuotaBridgeCheck {
     static func main() {
+        assertNoKeychainACLPersistence()
+
         let encoded = "djEwWQZAlsI15AYVuYhxWuDnjtvLtdxVhAFCrSG6HezmEw0="
         guard let blob = Data(base64Encoded: encoded),
               let value = GrokBotQuotaBridge.decryptElectronSafeStorage(
@@ -49,5 +51,26 @@ struct GrokBotQuotaBridgeCheck {
             exit(1)
         }
         print("ok")
+    }
+
+    private static func assertNoKeychainACLPersistence() {
+        let source = URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Tokei/Sources/Tokei/GrokBotQuotaBridge.swift")
+        guard let text = try? String(contentsOf: source, encoding: .utf8) else {
+            fputs("unable to read GrokBotQuotaBridge.swift\n", stderr)
+            exit(1)
+        }
+        let forbidden = [
+            "persistCurrentAppAccess",
+            "SecKeychainItemSetAccess",
+            "SecACLSetContents",
+        ]
+        for token in forbidden where text.contains(token) {
+            fputs("GrokBotQuotaBridge.swift must not persist Keychain ACLs (\(token))\n", stderr)
+            exit(1)
+        }
     }
 }

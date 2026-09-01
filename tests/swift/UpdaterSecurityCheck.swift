@@ -10,44 +10,63 @@ private enum CheckError: Error, CustomStringConvertible {
     }
 }
 
+private let developerIDIdentity = "Developer ID Application: Wenzheng Liao (8A52V3MFHD)"
+private let requiredTeamID = "8A52V3MFHD"
+
 @main
 private enum UpdaterSecurityCheck {
     static func main() throws {
         let digest = String(repeating: "a", count: 64)
 
+        try testTrustedUpdateIdentity()
         try testUpdateWorkspaceAndInstaller()
         try testShellEscaping()
         try testVersionSelection(digest: digest)
 
         try expect(UpdateSecurity.isAllowedMetadataURL(
-            try url("https://api.github.com/repos/cclank/tokei/releases/latest")
+            try url("https://api.github.com/repos/chocolatemale/tokei/releases/latest")
         ), "GitHub metadata URL should be allowed")
-        try expect(UpdateSecurity.isAllowedDownloadSourceURL(
+        try expect(!UpdateSecurity.isAllowedMetadataURL(
+            try url("https://dl.lanshuagent.com/tokei/latest.json")
+        ), "CDN metadata URL should be rejected")
+        try expect(!UpdateSecurity.isAllowedMetadataURL(
+            try url("https://api.github.com/repos/cclank/tokei/releases/latest")
+        ), "foreign GitHub metadata URL should be rejected")
+        try expect(!UpdateSecurity.isAllowedDownloadSourceURL(
             try url("https://dl.lanshuagent.com/tokei/Tokei-v1.0.14.dmg")
-        ), "official mirror should be allowed")
+        ), "CDN download must not be treated as identity")
+        try expect(UpdateSecurity.isAllowedDownloadSourceURL(
+            try url("https://github.com/chocolatemale/tokei/releases/download/v1.0.14/Tokei.dmg")
+        ), "chocolatemale GitHub release asset should be allowed")
         try expect(UpdateSecurity.isAllowedDownloadResponseURL(
             try url("https://release-assets.githubusercontent.com/github-production-release-asset/file")
         ), "GitHub release redirect should be allowed")
 
         try expect(!UpdateSecurity.isAllowedDownloadSourceURL(
-            try url("http://dl.lanshuagent.com/tokei/Tokei.dmg")
+            try url("http://github.com/chocolatemale/tokei/releases/download/v1.0.14/Tokei.dmg")
         ), "plain HTTP should be rejected")
         try expect(!UpdateSecurity.isAllowedDownloadSourceURL(
-            try url("https://dl.lanshuagent.com.evil.example/Tokei.dmg")
+            try url("https://github.com.evil.example/chocolatemale/tokei/releases/download/v1.0.14/Tokei.dmg")
         ), "lookalike subdomain should be rejected")
         try expect(!UpdateSecurity.isAllowedDownloadSourceURL(
             try url("https://github.com@evil.example/Tokei.dmg")
         ), "userinfo host confusion should be rejected")
         try expect(!UpdateSecurity.isAllowedDownloadSourceURL(
-            try url("https://github.com:444/cclank/tokei/Tokei.dmg")
+            try url("https://github.com:444/chocolatemale/tokei/releases/download/v1.0.14/Tokei.dmg")
         ), "unexpected port should be rejected")
+        try expect(!UpdateSecurity.isAllowedDownloadSourceURL(
+            try url("https://github.com/cclank/tokei/releases/download/v1.0.14/Tokei.dmg")
+        ), "arbitrary GitHub DMG path should be rejected")
+        try expect(!UpdateSecurity.isAllowedDownloadSourceURL(
+            try url("https://github.com/chocolatemale/tokei.dmg")
+        ), "non-release GitHub DMG path should be rejected")
 
         let githubJSON: [String: Any] = [
             "tag_name": "v1.0.14",
-            "url": "https://api.github.com/repos/cclank/tokei/releases/1",
+            "url": "https://api.github.com/repos/chocolatemale/tokei/releases/1",
             "assets": [[
                 "name": "Tokei.dmg",
-                "browser_download_url": "https://github.com/cclank/tokei/releases/download/v1.0.14/Tokei.dmg",
+                "browser_download_url": "https://github.com/chocolatemale/tokei/releases/download/v1.0.14/Tokei.dmg",
                 "digest": "sha256:\(digest.uppercased())",
             ]],
         ]
@@ -57,13 +76,31 @@ private enum UpdaterSecurityCheck {
         try expect(githubRelease.downloadURL.host == "github.com", "DMG asset URL should win over API URL")
         try expect(githubRelease.sha256 == digest, "GitHub digest should be normalized")
 
-        let mirrorJSON: [String: Any] = [
-            "version": "v1.0.14",
+        let cdnOnlyJSON: [String: Any] = [
+            "tag_name": "v1.0.14",
             "download_url": "https://dl.lanshuagent.com/tokei/Tokei-v1.0.14.dmg",
             "sha256": digest,
         ]
-        try expect(UpdateSecurity.validatedRelease(from: mirrorJSON)?.sha256 == digest,
-                   "mirror metadata with a digest should parse")
+        try expect(UpdateSecurity.validatedRelease(from: cdnOnlyJSON) == nil,
+                   "CDN-only metadata should be rejected")
+        try expect(UpdateSecurity.validatedRelease(from: [
+            "version": "v1.0.14",
+            "download_url": "https://dl.lanshuagent.com/tokei/Tokei-v1.0.14.dmg",
+            "sha256": digest,
+        ]) == nil, "CDN mirror JSON should be rejected even with a digest")
+        try expect(UpdateSecurity.validatedRelease(from: [
+            "tag_name": "v1.0.14",
+            "download_url": "https://github.com/chocolatemale/tokei/releases/download/v1.0.14/Tokei.dmg",
+            "sha256": digest,
+        ]) == nil, "top-level download_url metadata should be rejected")
+        try expect(UpdateSecurity.validatedRelease(from: [
+            "tag_name": "v1.0.14",
+            "assets": [[
+                "name": "Tokei.dmg",
+                "browser_download_url": "https://github.com/cclank/tokei/releases/download/v1.0.14/Tokei.dmg",
+                "digest": "sha256:\(digest)",
+            ]],
+        ]) == nil, "foreign GitHub repo assets should be rejected")
         try expect(UpdateSecurity.validatedRelease(from: [
             "tag_name": "v1.0.14",
             "download_url": "https://dl.lanshuagent.com/tokei/Tokei-v1.0.14.dmg",
@@ -106,49 +143,55 @@ private enum UpdaterSecurityCheck {
                    "update workspace should be private")
         try expect(!UpdateInstaller.script.contains("/tmp/tokei_"),
                    "installer should not use shared fixed paths")
+        try expect(!UpdateInstaller.script.contains("/usr/bin/xattr -cr"),
+                   "installer must not strip Gatekeeper quarantine")
+        try expect(UpdateInstaller.script.contains("codesign -dv --verbose=4"),
+                   "installer must inspect code signature details")
+        try expect(UpdateInstaller.script.contains("TeamIdentifier=\(requiredTeamID)"),
+                   "installer must require Team ID \(requiredTeamID)")
+        try expect(UpdateInstaller.script.contains("Signature=adhoc"),
+                   "installer must reject ad-hoc signatures")
         try fileManager.removeItem(at: secondWorkspace.rootURL)
-
-        let sourceRoot = testRoot.appendingPathComponent("dmg-source", isDirectory: true)
-        let sourceApp = sourceRoot.appendingPathComponent("Tokei.app", isDirectory: true)
-        try createSignedApp(at: sourceApp, version: "new")
 
         let installedApp = testRoot.appendingPathComponent("Installed Tokei.app", isDirectory: true)
         try fileManager.createDirectory(at: installedApp, withIntermediateDirectories: true)
         try Data("old".utf8).write(to: installedApp.appendingPathComponent("version.txt"))
 
-        let createStatus = try run(
+        let adhocWorkspace = try UpdateInstaller.createWorkspace(in: testRoot)
+        let adhocRoot = testRoot.appendingPathComponent("adhoc-dmg-source", isDirectory: true)
+        let adhocApp = adhocRoot.appendingPathComponent("Tokei.app", isDirectory: true)
+        try createSignedApp(at: adhocApp, version: "adhoc", identity: "-")
+        let adhocDMGStatus = try run(
             "/usr/bin/hdiutil",
-            ["create", "-volname", "TokeiTest", "-srcfolder", sourceRoot.path,
-             "-ov", "-format", "UDZO", workspace.dmgURL.path]
+            ["create", "-volname", "TokeiAdhocTest", "-srcfolder", adhocRoot.path,
+             "-ov", "-format", "UDZO", adhocWorkspace.dmgURL.path]
         )
-        try expect(createStatus == 0, "test DMG should be created")
-
+        try expect(adhocDMGStatus == 0, "ad-hoc test DMG should be created")
         try UpdateInstaller.script.write(
-            to: workspace.scriptURL,
+            to: adhocWorkspace.scriptURL,
             atomically: true,
             encoding: .utf8
         )
-        let backupURL = workspace.backupURL(for: installedApp)
-        let installStatus = try run(
+        let adhocBackup = adhocWorkspace.backupURL(for: installedApp)
+        let adhocStatus = try run(
             "/bin/bash",
-            [workspace.scriptURL.path, workspace.dmgURL.path, workspace.mountURL.path,
-             installedApp.path, workspace.rootURL.path, backupURL.path]
+            [adhocWorkspace.scriptURL.path, adhocWorkspace.dmgURL.path,
+             adhocWorkspace.mountURL.path, installedApp.path, adhocWorkspace.rootURL.path,
+             adhocBackup.path]
         )
-        try expect(installStatus == 0, "installer should replace a valid app")
-        let installedVersion = try String(
-            contentsOf: installedApp.appendingPathComponent("Contents/Resources/version.txt"),
+        try expect(adhocStatus != 0, "ad-hoc signed candidate must fail install")
+        let preservedOld = try String(
+            contentsOf: installedApp.appendingPathComponent("version.txt"),
             encoding: .utf8
         )
-        try expect(installedVersion == "new", "installer should copy the new app")
-        try expect(!fileManager.fileExists(atPath: workspace.rootURL.path),
-                   "installer should remove its workspace")
-        try expect(!fileManager.fileExists(atPath: backupURL.path),
-                   "installer should remove its backup after success")
+        try expect(preservedOld == "old", "ad-hoc update must leave the previous app in place")
+        try expect(!fileManager.fileExists(atPath: adhocBackup.path),
+                   "rejected ad-hoc update should not leave a backup")
 
         let invalidWorkspace = try UpdateInstaller.createWorkspace(in: testRoot)
         let invalidRoot = testRoot.appendingPathComponent("invalid-dmg-source", isDirectory: true)
         let invalidApp = invalidRoot.appendingPathComponent("Tokei.app", isDirectory: true)
-        try createSignedApp(at: invalidApp, version: "tampered")
+        try createSignedApp(at: invalidApp, version: "tampered", identity: "-")
         try Data("modified after signing".utf8).write(
             to: invalidApp.appendingPathComponent("Contents/Resources/version.txt")
         )
@@ -170,14 +213,116 @@ private enum UpdaterSecurityCheck {
              invalidWorkspace.backupURL(for: installedApp).path]
         )
         try expect(invalidStatus != 0, "installer should reject a tampered app")
-        let preservedVersion = try String(
+        let preservedOldAfterTamper = try String(
+            contentsOf: installedApp.appendingPathComponent("version.txt"),
+            encoding: .utf8
+        )
+        try expect(preservedOldAfterTamper == "old",
+                   "rejected tampered update should preserve the installed app")
+
+        guard canSignWithDeveloperID() else {
+            fputs("note: skipping live Developer ID install; keychain cannot sign in this session\n",
+                  stderr)
+            return
+        }
+
+        let sourceRoot = testRoot.appendingPathComponent("dmg-source", isDirectory: true)
+        let sourceApp = sourceRoot.appendingPathComponent("Tokei.app", isDirectory: true)
+        try createSignedApp(at: sourceApp, version: "new", identity: developerIDIdentity)
+
+        let createStatus = try run(
+            "/usr/bin/hdiutil",
+            ["create", "-volname", "TokeiTest", "-srcfolder", sourceRoot.path,
+             "-ov", "-format", "UDZO", workspace.dmgURL.path]
+        )
+        try expect(createStatus == 0, "test DMG should be created")
+
+        try UpdateInstaller.script.write(
+            to: workspace.scriptURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let backupURL = workspace.backupURL(for: installedApp)
+        let installStatus = try run(
+            "/bin/bash",
+            [workspace.scriptURL.path, workspace.dmgURL.path, workspace.mountURL.path,
+             installedApp.path, workspace.rootURL.path, backupURL.path]
+        )
+        try expect(installStatus == 0, "Developer ID signed candidate should install")
+        let installedVersion = try String(
             contentsOf: installedApp.appendingPathComponent("Contents/Resources/version.txt"),
             encoding: .utf8
         )
-        try expect(preservedVersion == "new", "rejected update should preserve the installed app")
+        try expect(installedVersion == "new", "installer should copy the new app")
+        try expect(!fileManager.fileExists(atPath: workspace.rootURL.path),
+                   "installer should remove its workspace")
+        try expect(!fileManager.fileExists(atPath: backupURL.path),
+                   "installer should remove its backup after success")
     }
 
-    private static func createSignedApp(at appURL: URL, version: String) throws {
+    private static func testTrustedUpdateIdentity() throws {
+        try expect(
+            !UpdateSecurity.isTrustedUpdateIdentity(
+                codesignVerboseOutput: """
+                Identifier=com.tokei.app
+                Signature=adhoc
+                TeamIdentifier=not set
+                """
+            ),
+            "ad-hoc codesign output must not be trusted"
+        )
+        try expect(
+            !UpdateSecurity.isTrustedUpdateIdentity(
+                codesignVerboseOutput: """
+                Identifier=com.tokei.app
+                Signature=adhoc
+                TeamIdentifier=8A52V3MFHD
+                """
+            ),
+            "ad-hoc plus a copied Team ID must not be trusted"
+        )
+        try expect(
+            !UpdateSecurity.isTrustedUpdateIdentity(
+                codesignVerboseOutput: """
+                Identifier=com.tokei.app
+                Authority=Apple Development: example
+                TeamIdentifier=ABCD123456
+                """
+            ),
+            "foreign Team ID must not be trusted"
+        )
+        try expect(
+            UpdateSecurity.isTrustedUpdateIdentity(
+                codesignVerboseOutput: """
+                Identifier=com.tokei.app
+                Authority=Developer ID Application: Wenzheng Liao (8A52V3MFHD)
+                TeamIdentifier=8A52V3MFHD
+                """
+            ),
+            "Developer ID Team \(requiredTeamID) must be trusted"
+        )
+        try expect(UpdateSecurity.requiredTeamIdentifier == requiredTeamID,
+                   "policy Team ID must match the installer")
+    }
+
+    private static func canSignWithDeveloperID() -> Bool {
+        let fileManager = FileManager.default
+        let probe = fileManager.temporaryDirectory
+            .appendingPathComponent("tokei-codesign-probe-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: probe) }
+        do {
+            try Data("probe".utf8).write(to: probe)
+            let status = try run(
+                "/usr/bin/codesign",
+                ["--force", "--sign", developerIDIdentity, "--timestamp=none", probe.path]
+            )
+            return status == 0
+        } catch {
+            return false
+        }
+    }
+
+    private static func createSignedApp(at appURL: URL, version: String, identity: String) throws {
         let fileManager = FileManager.default
         let macOSURL = appURL.appendingPathComponent("Contents/MacOS", isDirectory: true)
         let resourcesURL = appURL.appendingPathComponent("Contents/Resources", isDirectory: true)
@@ -215,7 +360,12 @@ private enum UpdaterSecurityCheck {
         try plistData.write(to: appURL.appendingPathComponent("Contents/Info.plist"))
         let signProcess = Process()
         signProcess.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        signProcess.arguments = ["--force", "--deep", "--sign", "-", appURL.path]
+        var arguments = ["--force", "--deep", "--sign", identity]
+        if identity != "-" {
+            arguments += ["--timestamp=none"]
+        }
+        arguments.append(appURL.path)
+        signProcess.arguments = arguments
         let signError = Pipe()
         signProcess.standardOutput = FileHandle.nullDevice
         signProcess.standardError = signError
@@ -226,7 +376,7 @@ private enum UpdaterSecurityCheck {
             encoding: .utf8
         ) ?? ""
         try expect(signProcess.terminationStatus == 0,
-                   "test app should be ad-hoc signed: \(errorText)")
+                   "test app should be signed with \(identity): \(errorText)")
     }
 
     private static func testVersionSelection(digest: String) throws {
@@ -239,22 +389,31 @@ private enum UpdaterSecurityCheck {
         try expect(!UpdateSecurity.isNewerVersion("not-a-version", than: "v1.0.14"),
                    "malformed versions should be rejected")
 
-        let older = UpdateRelease(
+        let github = UpdateRelease(
             tag: "v1.0.15",
-            downloadURL: try url("https://github.com/cclank/tokei/releases/download/v1.0.15/Tokei.dmg"),
+            downloadURL: try url("https://github.com/chocolatemale/tokei/releases/download/v1.0.15/Tokei.dmg"),
             sha256: digest
         )
-        let newer = UpdateRelease(
+        let newerGitHub = UpdateRelease(
             tag: "v1.1.0",
-            downloadURL: try url("https://dl.lanshuagent.com/tokei/Tokei-v1.1.0.dmg"),
+            downloadURL: try url("https://github.com/chocolatemale/tokei/releases/download/v1.1.0/Tokei.dmg"),
+            sha256: digest
+        )
+        let cdnNewer = UpdateRelease(
+            tag: "v9.9.9",
+            downloadURL: try url("https://dl.lanshuagent.com/tokei/Tokei-v9.9.9.dmg"),
             sha256: digest
         )
         try expect(
-            UpdateSecurity.newestRelease(in: [older, newer], newerThan: "v1.0.14") == newer,
-            "newest valid release should win across metadata sources"
+            UpdateSecurity.newestRelease(in: [github, newerGitHub], newerThan: "v1.0.14") == newerGitHub,
+            "newest valid GitHub release should win"
         )
         try expect(
-            UpdateSecurity.newestRelease(in: [older], newerThan: "v2.0.0") == nil,
+            UpdateSecurity.newestRelease(in: [cdnNewer, github], newerThan: "v1.0.14") == github,
+            "CDN mirror must not win over GitHub"
+        )
+        try expect(
+            UpdateSecurity.newestRelease(in: [github], newerThan: "v2.0.0") == nil,
             "older releases should be ignored"
         )
     }

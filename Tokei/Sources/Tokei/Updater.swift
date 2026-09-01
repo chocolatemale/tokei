@@ -21,8 +21,7 @@ final class Updater: NSObject, ObservableObject, URLSessionDownloadDelegate {
     @Published var state: State = .idle
 
     private let apiURLs = [
-        URL(string: "https://dl.lanshuagent.com/tokei/latest.json")!,
-        URL(string: "https://api.github.com/repos/cclank/tokei/releases/latest")!,
+        URL(string: "https://api.github.com/repos/chocolatemale/tokei/releases/latest")!,
     ]
     private var downloadTask: URLSessionDownloadTask?
     private var expectedSHA256: String?
