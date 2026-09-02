@@ -82,10 +82,11 @@ enum Theme {
 // 毛玻璃之上的浮起卡片:淡色填充 + 渐变描边 + 柔和投影。
 struct Card<Content: View>: View {
     var tint: Color
+    var fillsHeight: Bool = true
     @ViewBuilder var content: () -> Content
     var body: some View {
         content()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: fillsHeight ? .infinity : nil, alignment: .topLeading)
             .padding(13)
             .background(
                 RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)

@@ -9,7 +9,7 @@ final class Store: ObservableObject {
     @Published var lastUpdated: String = "加载中…"
     @Published var lastRefreshAt: Date?
     @Published var isRefreshing = false
-    static let refreshInterval: TimeInterval = 30
+    static let refreshInterval: TimeInterval = 300
 
     func secondsUntilNextRefresh(now: Date = Date()) -> Int {
         guard let lastRefreshAt else { return 0 }
@@ -288,7 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         store.sitReminder.updateRunning()
         Updater.shared.checkForUpdate()
         autoFetchPricing()
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: Store.refreshInterval, repeats: true) { [weak self] _ in
             self?.store.refresh()
         }
         Timer.scheduledTimer(withTimeInterval: Updater.automaticCheckInterval, repeats: true) { _ in
@@ -451,9 +451,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            store.refresh()
-            // 轨迹页的额度明细要跑 1~3 秒,面板一开就预热,免得切过去干等。
-            QuotaDetailRepository.shared.load()
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

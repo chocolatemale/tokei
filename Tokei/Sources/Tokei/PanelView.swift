@@ -194,6 +194,7 @@ struct PanelView: View {
             } else if let u = store.usage {
                 let cards = toolCards(for: u)
                 SegmentedTabs(sel: $sel)
+                periodSummaryBar(usage: u, cards: cards)
                 toolCardsLayout(cards.filter { $0.visible && $0.active })
                 inactiveToolsLine(cards)
             } else {
@@ -523,6 +524,94 @@ struct PanelView: View {
                          tint: Theme.kimicode, content: AnyView(tokenUsageBlock(title: "Kimi Code", kcr, tint: Theme.kimicode, modelsOpen: $kimiCodeModelsOpen, showsCost: false, toolID: "kimicode"))),
         ]
         return ToolCardOrder.sorted(cards, id: \.id, order: orderedToolIDs)
+    }
+
+    private func periodTotals(usage: Usage, cards: [ToolCardItem]) -> UsageSummaryBuilder.Totals {
+        let active = Set(cards.filter { $0.visible && $0.active }.map(\.id))
+        var lines = UsageSummaryBuilder.toolLines(
+            usage: usage, range: sel, visibility: toolVisibility, order: orderedToolIDs
+        ).filter { active.contains($0.id) }
+        if showCursor, active.contains("cursor") {
+            let r = usage.cursor.usage?.ranges.get(sel) ?? TokenUsageRange()
+            if r.totalTokens > 0 || r.cost > 0 || r.requests > 0 {
+                lines.append(UsageSummaryBuilder.Line(
+                    id: "cursor", name: "Cursor",
+                    cost: r.cost > 0 ? r.cost : nil,
+                    tokens: r.totalTokens > 0 ? r.totalTokens : nil,
+                    sessions: r.sessions > 0 ? r.sessions : nil,
+                    calls: r.requests > 0 ? r.requests : nil,
+                    input: r.in > 0 ? r.in : nil,
+                    output: r.out > 0 ? r.out : nil,
+                    cacheRead: r.cr > 0 ? r.cr : nil,
+                    cacheWrite: r.cw > 0 ? r.cw : nil,
+                    reason: nil, hit: r.hit > 0 ? r.hit : nil, extra: nil
+                ))
+            }
+        }
+        if showZai, active.contains("zai") {
+            let r = usage.zai.usage?.ranges.get(sel) ?? TokenUsageRange()
+            if r.totalTokens > 0 || r.cost > 0 {
+                lines.append(UsageSummaryBuilder.Line(
+                    id: "zai", name: "z.ai",
+                    cost: r.cost > 0 ? r.cost : nil,
+                    tokens: r.totalTokens > 0 ? r.totalTokens : nil,
+                    sessions: nil, calls: r.requests > 0 ? r.requests : nil,
+                    input: r.in > 0 ? r.in : nil,
+                    output: r.out > 0 ? r.out : nil,
+                    cacheRead: r.cr > 0 ? r.cr : nil,
+                    cacheWrite: r.cw > 0 ? r.cw : nil,
+                    reason: nil, hit: r.hit > 0 ? r.hit : nil, extra: nil
+                ))
+            }
+        }
+        return UsageSummaryBuilder.totals(for: lines)
+    }
+
+    @ViewBuilder
+    private func periodSummaryBar(usage: Usage, cards: [ToolCardItem]) -> some View {
+        let t = periodTotals(usage: usage, cards: cards)
+        Card(tint: Theme.codex, fillsHeight: false) {
+            HStack(alignment: .center, spacing: 14) {
+                CostHeadline(
+                    value: t.tokens > 0 ? Fmt.human(t.tokens) : "0",
+                    caption: "\(sel.label) 合计",
+                    tint: Theme.codex,
+                    cost: t.cost > 0 ? t.cost : nil
+                )
+                if useWide {
+                    Spacer(minLength: 8)
+                    HStack(spacing: 16) {
+                        if t.tools > 0 {
+                            summaryChip(label: "工具", value: "\(t.tools)", tint: Theme.codex)
+                        }
+                        if t.sessions > 0 {
+                            summaryChip(label: "会话", value: "\(t.sessions)", tint: Theme.gemini)
+                        }
+                        if t.input > 0 {
+                            summaryChip(label: "输入", value: Fmt.human(t.input), tint: Theme.claude)
+                        }
+                        if t.output > 0 {
+                            summaryChip(label: "输出", value: Fmt.human(t.output), tint: Theme.grok)
+                        }
+                        if t.cacheRead > 0 {
+                            summaryChip(label: "缓存读", value: Fmt.human(t.cacheRead), tint: Theme.hermes)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func summaryChip(label: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.system(size: 9.5))
+                .foregroundStyle(Theme.tTertiary)
+            Text(value)
+                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.tPrimary)
+                .lineLimit(1)
+        }
     }
 
     @ViewBuilder
