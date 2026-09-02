@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import TokeiUpdateSecurity
 
 struct PanelView: View {
@@ -68,6 +69,7 @@ struct PanelView: View {
     @AppStorage("showQwenCode") private var showQwenCode = true
     @AppStorage("showQwenWork") private var showQwenWork = true
     @AppStorage("showKimiCode") private var showKimiCode = true
+    @AppStorage("toolCardOrder") private var toolCardOrderRaw = ""
     /// 默认关闭：Grok 额度只读本地日志；开启后才用登录凭据请求实时账单接口。
     @AppStorage("grokLiveQuotaEnabled") private var grokLiveQuotaEnabled = false
     /// 默认关闭：显式授权后复用 Grok Bot 或 Cursor 登录态查询官方额度。
@@ -84,6 +86,11 @@ struct PanelView: View {
     @AppStorage(MenuBarQuotaSource.grok.defaultsKey) private var menuBarQuotaGrok = false
     @State private var copyFeedback = false
     @State private var copiedToolID: String?
+    @State private var draggingCardID: String?
+    @State private var cardOrderDraft: [String]?
+
+    private var orderedToolIDs: [String] { ToolCardOrder.parse(toolCardOrderRaw) }
+    private var displayedCardOrder: [String] { cardOrderDraft ?? orderedToolIDs }
 
     private var toolVisibility: UsageToolVisibility {
         UsageToolVisibility(
@@ -108,10 +115,10 @@ struct PanelView: View {
     }
     private var hasMultipleDevices: Bool { store.syncEnabled && !store.peers.isEmpty }
     private var useWide: Bool { visibleCount > 2 }
-    private var panelWidth: CGFloat { useWide ? 640 : Theme.panelWidth }
-    private var settingsPanelWidth: CGFloat { 640 }
+    private var panelWidth: CGFloat { useWide ? Theme.widePanelWidth : Theme.panelWidth }
+    private var settingsPanelWidth: CGFloat { Theme.widePanelWidth }
     private var settingsColumnWidth: CGFloat {
-        (settingsPanelWidth - Theme.outerPad * 2 - 11) / 2
+        (settingsPanelWidth - Theme.outerPad * 2 - Theme.stackSpacing) / 2
     }
     private var settingsMenuPickerWidth: CGFloat { settingsColumnWidth - 40 }
 
@@ -136,7 +143,7 @@ struct PanelView: View {
     var body: some View {
         let w = (mode == .settings || mode == .quotaHistory)
             ? settingsPanelWidth
-            : (mode == .cards ? panelWidth : max(panelWidth, 420))
+            : (mode == .cards ? panelWidth : max(panelWidth, (420 * Theme.layoutScale).rounded()))
         if scrollable {
             if mode == .projects {
                 projectPanelContent
@@ -162,7 +169,7 @@ struct PanelView: View {
     }
 
     private var projectPanelContent: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: Theme.stackSpacing) {
             header
             ScrollView(.vertical, showsIndicators: true) {
                 ProjectTrailView(cached: $trailProjects)
@@ -174,7 +181,7 @@ struct PanelView: View {
     }
 
     private var panelContent: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: Theme.stackSpacing) {
             header
             if mode == .quotaHistory {
                 QuotaHistoryView(history: store.quotaHistory)
@@ -226,33 +233,31 @@ struct PanelView: View {
 
     var header: some View {
         HStack(spacing: 9) {
-            Button {
-                if mode != .cards { withAnimation(.easeInOut(duration: 0.35)) { mode = .cards } }
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "timer")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(Theme.brand)
-                        .overlay(alignment: .topTrailing) {
-                            if let e = Self.festiveEmoji() {
-                                Text(e).font(.system(size: 11)).offset(x: 7, y: -7)
-                            }
+            HStack(spacing: 9) {
+                Image(systemName: "timer")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Theme.brand)
+                    .overlay(alignment: .topTrailing) {
+                        if let e = Self.festiveEmoji() {
+                            Text(e).font(.system(size: 11)).offset(x: 7, y: -7)
                         }
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("Tokei")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .tracking(0.5)
-                            .lineLimit(1)
-                        Text("知度 · AI 用量")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Theme.tTertiary)
-                            .lineLimit(1)
                     }
-                    .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Tokei")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .tracking(0.5)
+                        .lineLimit(1)
+                    Text("知度 · AI 用量")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.tTertiary)
+                        .lineLimit(1)
                 }
-                .contentShape(Rectangle())
+                .fixedSize(horizontal: true, vertical: false)
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if mode != .cards { mode = .cards }
+            }
             .tip("主页")
             updatePill
             if store.syncFailStreak >= 3 {
@@ -265,9 +270,35 @@ struct PanelView: View {
             if hasMultipleDevices {
                 deviceScopePicker
             }
-            Text(store.lastUpdated)
-                .font(.system(size: 9.5, design: .monospaced))
-                .foregroundStyle(Theme.tTertiary)
+            HStack(spacing: 5) {
+                Text(store.lastUpdated)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(Theme.tTertiary)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let remain = store.secondsUntilNextRefresh(now: context.date)
+                    if remain > 0 && !store.isRefreshing {
+                        Text("\(remain)s")
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(Theme.tTertiary)
+                    }
+                }
+                Button {
+                    store.refresh()
+                } label: {
+                    if store.isRefreshing {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(width: 12, height: 12)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.tTertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isRefreshing)
+                .help("立即刷新")
+            }
             Button {
                 withAnimation(.easeInOut(duration: 0.35)) { mode = mode == .projects ? .cards : .projects }
             } label: {
@@ -373,7 +404,7 @@ struct PanelView: View {
         let cursorUsage = u.cursor.usage?.ranges.get(sel) ?? TokenUsageRange()
         let zaiUsage = u.zai.usage?.ranges.get(sel) ?? TokenUsageRange()
         let qcr = u.qwencode.ranges.get(sel), kcr = u.kimicode.ranges.get(sel)
-        return [
+        let cards: [ToolCardItem] = [
             ToolCardItem(id: "claude", name: "Claude", visible: showClaude,
                          active: cr.sessions > 0 || u.claude.q5 != nil ||
                              u.claude.q7 != nil || u.claude.qf != nil,
@@ -491,6 +522,7 @@ struct PanelView: View {
             ToolCardItem(id: "kimicode", name: "Kimi Code", visible: showKimiCode, active: kcr.sessions > 0,
                          tint: Theme.kimicode, content: AnyView(tokenUsageBlock(title: "Kimi Code", kcr, tint: Theme.kimicode, modelsOpen: $kimiCodeModelsOpen, showsCost: false, toolID: "kimicode"))),
         ]
+        return ToolCardOrder.sorted(cards, id: \.id, order: orderedToolIDs)
     }
 
     @ViewBuilder
@@ -516,6 +548,7 @@ struct PanelView: View {
                     }
                 }
             }
+            .transaction { $0.animation = nil }
         } else {
             VStack(spacing: 13) {
                 ForEach(compactCards + standardCards) { item in
@@ -543,10 +576,9 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 11) {
             cardHead("Claude Code", tint: Theme.claude, sessions: r.sessions, toolID: "claude")
             if r.sessions > 0 {
-                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw), caption: "\(sel.label) 总量", tint: Theme.claude)
-                metricGrid([
-                    .init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost)),
-                ], hit: r.hit, extra: [
+                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw), caption: "\(sel.label) 总量",
+                             tint: Theme.claude, cost: r.cost)
+                metricGrid([], hit: r.hit, extra: [
                     .init("arrow.down", "输入", Fmt.human(r.in)),
                     .init("arrow.up", "输出", Fmt.human(r.out)),
                     .init("bolt.fill", "缓存读", Fmt.human(r.cr)),
@@ -617,9 +649,9 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 11) {
             cardHead("Codex", tint: Theme.codex, sessions: r.sessions, toolID: "codex")
             if r.sessions > 0 {
-                CostHeadline(value: Fmt.human(r.in + r.cached + r.out), caption: "\(sel.label) 总量", tint: Theme.codex)
-                metricGrid([.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost))],
-                    hit: r.hit, extra: {
+                CostHeadline(value: Fmt.human(r.in + r.cached + r.out), caption: "\(sel.label) 总量",
+                             tint: Theme.codex, cost: r.cost)
+                metricGrid([], hit: r.hit, extra: {
                     var items: [Metric] = [
                         .init("arrow.down", "输入", Fmt.human(r.in)),
                         .init("bolt.fill", "缓存读", Fmt.human(r.cached)),
@@ -760,9 +792,9 @@ struct PanelView: View {
                         .font(.system(size: 9.5))
                         .foregroundStyle(Theme.tTertiary)
                 }
-                CostHeadline(value: Fmt.human(r.totalTokens), caption: "\(usageLabel) 总量", tint: Theme.gemini)
-                metricGrid([.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost))],
-                    hit: r.hit, extra: {
+                CostHeadline(value: Fmt.human(r.totalTokens), caption: "\(usageLabel) 总量",
+                             tint: Theme.gemini, cost: r.cost)
+                metricGrid([], hit: r.hit, extra: {
                     var items: [Metric] = [
                         .init("arrow.down", "输入", Fmt.human(r.in)),
                         .init("arrow.up", "输出", Fmt.human(r.out)),
@@ -828,9 +860,6 @@ struct PanelView: View {
         periodLabel: String? = nil
     ) -> some View {
         var top: [Metric] = []
-        if r.cost > 0 {
-            top.append(.init("dollarsign.circle", "API 价", String(format: "$%.2f", r.cost)))
-        }
         if r.requests > 0 {
             top.append(.init("arrow.triangle.2.circlepath", "请求", Fmt.human(r.requests)))
         }
@@ -850,7 +879,8 @@ struct PanelView: View {
             CostHeadline(
                 value: Fmt.human(r.totalTokens),
                 caption: "\(r.coverage ?? periodLabel ?? sel.label) 账号总量",
-                tint: tint
+                tint: tint,
+                cost: r.cost
             )
             Text("账号级用量 · 单列统计，避免与本地工具日志重复计算")
                 .font(.system(size: 8.5))
@@ -917,13 +947,15 @@ struct PanelView: View {
                     let detail = item.element
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(detail.label)
-                            .font(.system(size: 10))
+                            .font(.system(size: 9.5))
                             .foregroundStyle(Theme.tTertiary)
                         Spacer(minLength: 8)
                         VStack(alignment: .trailing, spacing: 1) {
                             Text(providerQuotaDetailValue(detail))
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(Theme.tPrimary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                             if let secondary = detail.secondary, !secondary.isEmpty {
                                 Text(secondary)
                                     .font(.system(size: 8.5, design: .monospaced))
@@ -1027,7 +1059,7 @@ struct PanelView: View {
                     }
                     return items
                 }(), tint: Theme.grokBot)
-                Text("本地活动 · 授权后显示官方 Token、模型和成本")
+                Text("本地活动 · 官方 Token 需已登录 Cursor 并打开 Grok Bot 额度查询")
                     .font(.system(size: 8.5))
                     .foregroundStyle(Theme.tTertiary)
             } else if !stat.quota.available {
@@ -1057,13 +1089,11 @@ struct PanelView: View {
             if hasUsage {
                 CostHeadline(value: Fmt.human(r.tokens),
                              caption: r.usage_available ? "\(sel.label) 真实用量" : "\(sel.label) 上下文快照",
-                             tint: Theme.grok)
+                             tint: Theme.grok,
+                             cost: r.usage_available ? r.cost : nil)
                 let grokMetrics: [Metric] = {
                     var items: [Metric] = []
                     if r.usage_available {
-                        if r.cost > 0 {
-                            items.append(.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost)))
-                        }
                         items.append(.init("arrow.down", "输入", Fmt.human(r.in)))
                         items.append(.init("bolt.fill", "缓存读", Fmt.human(r.cr)))
                         items.append(.init("arrow.up", "输出", Fmt.human(r.out)))
@@ -1101,14 +1131,17 @@ struct PanelView: View {
                 } else if let model = g.model, !model.isEmpty {
                     modelBadge(model, tint: Theme.grok)
                 }
-                Text(r.usage_available
-                     ? (r.cost > 0
-                        ? "来自 Grok Build 本地推理日志；成本按 API 价估算，订阅实付不按此。"
-                        : "来自 Grok Build 本地推理日志；当前模型未匹配到公开价格。")
-                     : "旧版日志未保存真实用量，当前仅展示上下文与执行指标。")
-                    .font(.system(size: 8.5))
-                    .foregroundStyle(Theme.tTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if !r.usage_available {
+                    Text("旧版日志未保存真实用量，当前仅展示上下文与执行指标。")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(Theme.tTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if r.cost <= 0 {
+                    Text("来自 Grok Build 本地推理日志；当前模型未匹配到公开价格。")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(Theme.tTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else if !compactExpired && quotaState != .unavailable {
                 usageEmptyHint
             }
@@ -1553,9 +1586,9 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 11) {
             cardHead("Hermes", tint: Theme.hermes, sessions: r.sessions, toolID: "hermes")
             if r.sessions > 0 {
-                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw + r.reason), caption: "\(sel.label) 总量", tint: Theme.hermes)
-                metricGrid([.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost))],
-                    hit: r.hit, extra: {
+                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw + r.reason), caption: "\(sel.label) 总量",
+                             tint: Theme.hermes, cost: r.cost)
+                metricGrid([], hit: r.hit, extra: {
                     var items: [Metric] = [
                         .init("arrow.down", "输入", Fmt.human(r.in)),
                         .init("arrow.up", "输出", Fmt.human(r.out)),
@@ -1579,9 +1612,9 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 11) {
             cardHead("OpenClaw", tint: Theme.openclaw, sessions: r.sessions, toolID: "openclaw")
             if r.in + r.out + r.cr + r.cw > 0 {
-                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw), caption: "\(sel.label) 总量", tint: Theme.openclaw)
-                metricGrid([.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost))],
-                    hit: r.hit, extra: {
+                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw), caption: "\(sel.label) 总量",
+                             tint: Theme.openclaw, cost: r.cost)
+                metricGrid([], hit: r.hit, extra: {
                     var items: [Metric] = [
                         .init("arrow.down", "输入", Fmt.human(r.in)),
                         .init("arrow.up", "输出", Fmt.human(r.out)),
@@ -1633,9 +1666,9 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 11) {
             cardHead(title, tint: tint, sessions: r.sessions, toolID: toolID)
             if r.sessions > 0 {
-                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw + r.reason), caption: "\(sel.label) 总量", tint: tint)
-                metricGrid(showsCost ? [.init("dollarsign.circle", "≈成本", String(format: "$%.2f", r.cost))] : [],
-                    hit: r.hit, extra: tokenUsageMetrics(r, inclusiveIO: inclusiveIO), tint: tint)
+                CostHeadline(value: Fmt.human(r.in + r.out + r.cr + r.cw + r.reason), caption: "\(sel.label) 总量",
+                             tint: tint, cost: showsCost ? r.cost : nil)
+                metricGrid([], hit: r.hit, extra: tokenUsageMetrics(r, inclusiveIO: inclusiveIO), tint: tint)
                 if !r.models.isEmpty {
                     tokenModelDisclosure(r.models, open: modelsOpen, tint: tint,
                                          inclusiveIO: inclusiveIO)
@@ -1862,10 +1895,13 @@ struct PanelView: View {
         }
     }
 
+    @ViewBuilder
     var disclaimer: some View {
-        Text(mode == .settings ? "Made by lank" : "成本按 API 价估算,非订阅实付")
-            .font(.system(size: 9))
-            .foregroundStyle(Theme.tTertiary)
+        if mode == .settings {
+            Text("Made by lank")
+                .font(.system(size: 9))
+                .foregroundStyle(Theme.tTertiary)
+        }
     }
 
     @ViewBuilder
@@ -2158,15 +2194,17 @@ struct PanelView: View {
     func quotaRow(title: String, pct: Double, detail: String? = nil, reset: Int?, tint: Color) -> some View {
         VStack(spacing: 4) {
             HStack {
-                Text(title).font(.system(size: 11)).foregroundStyle(Theme.tSecondary)
+                Text(title).font(.system(size: 9.5)).foregroundStyle(Theme.tTertiary)
                 if let d = detail {
                     Text(d)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Theme.tTertiary)
+                        .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Theme.tPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                 }
                 Spacer()
                 Text(SubscriptionQuotaPresentation.remainingLabel(pct))
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
                     .foregroundStyle(pct <= 15 ? AnyShapeStyle(.red) : AnyShapeStyle(Theme.tPrimary))
                 // 无重置时间时不显示「· ?」，避免分产品行误导。
                 if reset != nil {
@@ -2240,6 +2278,7 @@ struct PanelView: View {
             usage: usage,
             range: sel,
             visibility: toolVisibility,
+            order: orderedToolIDs,
             updated: store.lastUpdated
         )
         guard ok else { return }
@@ -2378,7 +2417,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 12) {
             settingsHeader
 
-            HStack(alignment: .top, spacing: 11) {
+            HStack(alignment: .top, spacing: Theme.stackSpacing) {
                 VStack(alignment: .leading, spacing: 11) {
                     settingsAgentsSection
                     settingsProviderQuotaSection
@@ -2574,35 +2613,27 @@ struct PanelView: View {
     }
 
     var settingsAgentsSection: some View {
-        settingsSection("square.grid.2x2", "显示卡片") {
+        let ids = displayedCardOrder
+        return settingsSection("square.grid.2x2", "显示卡片") {
+            Text("拖动调整面板和复制用量图的卡片顺序")
+                .font(.system(size: 8.5))
+                .foregroundStyle(Theme.tTertiary)
+                .fixedSize(horizontal: false, vertical: true)
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 7),
                                 GridItem(.flexible(), spacing: 7)], spacing: 7) {
-                settingsRow("Claude", tint: Theme.claude, isOn: $showClaude)
-                settingsRow("Codex", tint: Theme.codex, isOn: $showCodex)
-                settingsRow("Gemini / Antigravity", tint: Theme.gemini, isOn: $showGemini)
-                settingsRow("Cursor", tint: Theme.cursor, isOn: $showCursor)
-                settingsRow("Zed", tint: Theme.zed, isOn: $showZed)
-                settingsRow("Sub2API", tint: Theme.sub2api, isOn: $showSub2API)
-                settingsRow("z.ai / GLM", tint: Theme.zai, isOn: $showZai)
-                settingsRow("Grok", tint: Theme.grok, isOn: $showGrok)
-                settingsRow("Grok Bot", tint: Theme.grokBot, isOn: $showGrokBot)
-                settingsRow("Qoder Desktop", tint: Theme.qoder, isOn: $showQoder)
-                settingsRow("QoderWork", tint: Theme.qoderwork, isOn: $showQoderWork)
-                settingsRow("Qoder CLI", tint: Theme.qodercli, isOn: $showQoderCli)
-                settingsRow("Hermes", tint: Theme.hermes, isOn: $showHermes)
-                settingsRow("ZCode", tint: Theme.zcode, isOn: $showZcode)
-                settingsRow("MiMoCode", tint: Theme.mimocode, isOn: $showMimoCode)
-                settingsRow("OpenClaw", tint: Theme.openclaw, isOn: $showOpenClaw)
-                settingsRow("Pi", tint: Theme.pi, isOn: $showPi)
-                settingsRow("Prime Agent", tint: Theme.primeAgent, isOn: $showPrimeAgent)
-                settingsRow("WorkBuddy", tint: Theme.workbuddy, isOn: $showWorkBuddy)
-                settingsRow("WorkBuddy Intl.", tint: Theme.workbuddyAI, isOn: $showWorkBuddyAI)
-                settingsRow("DeepSeek Harness", tint: Theme.deepseekHarness, isOn: $showDeepSeekHarness)
-                settingsRow("OpenCode", tint: Theme.opencode, isOn: $showOpenCode)
-                settingsRow("Qwen Code", tint: Theme.qwencode, isOn: $showQwenCode)
-                settingsRow("千问办公", tint: Theme.qwenwork, isOn: $showQwenWork)
-                settingsRow("Kimi Code", tint: Theme.kimicode, isOn: $showKimiCode)
+                ForEach(ids, id: \.self) { id in
+                    if let row = cardSettingsRow(for: id) {
+                        draggableCardSettingsRow(id: id, name: row.name, tint: row.tint, isOn: row.isOn)
+                    }
+                }
             }
+        }
+        .onDisappear {
+            if let ids = cardOrderDraft {
+                toolCardOrderRaw = ToolCardOrder.encode(ids)
+            }
+            draggingCardID = nil
+            cardOrderDraft = nil
         }
         .onChange(of: showQoder) { enabled in
             Self.setQoderIdeEnabled(enabled)
@@ -2803,28 +2834,10 @@ struct PanelView: View {
             thinDivider
 
             settingsToggleRow("Grok Bot 额度查询", isOn: $grokBotQuotaEnabled)
-            Text("开启后使用 Grok Bot 自身登录态查询官方额度和 Token，并按 5 分钟缓存。首次使用或授权失效时需确认一次系统授权；Tokei 只读取额度所需信息，登录 Token 仅在内存中使用。")
+            Text("开启后复用 Cursor 登录态查询 Grok Bot 官方额度和 Token（与 OpenUsage 相同），不读取 Grok Bot 钥匙串。需已登录 Cursor。")
                 .font(.system(size: 8.5))
                 .foregroundStyle(Theme.tTertiary)
                 .fixedSize(horizontal: false, vertical: true)
-            if grokBotQuotaEnabled {
-                HStack(spacing: 8) {
-                    settingsActionButton(
-                        icon: "key.fill",
-                        title: grokBotAuthorizing ? "等待授权…" : "授权 Grok Bot"
-                    ) {
-                        authorizeGrokBotQuota()
-                    }
-                    .disabled(grokBotAuthorizing)
-                    if grokBotAuthorizing { ProgressView().controlSize(.mini) }
-                    if !grokBotAuthorizationResult.isEmpty {
-                        Text(grokBotAuthorizationResult)
-                            .font(.system(size: 8.5))
-                            .foregroundStyle(Theme.tTertiary)
-                            .lineLimit(2)
-                    }
-                }
-            }
 
             thinDivider
 
@@ -2892,9 +2905,11 @@ struct PanelView: View {
                     grokBotAuthorizationResult = "授权成功，可在 Grok Bot 卡片查看"
                     store.refresh()
                 } else if interactiveSucceeded {
-                    grokBotAuthorizationResult = "仅允许了本次读取，请重新授权并选择“始终允许”"
+                    grokBotAuthorizationResult = "仅允许了本次读取。请再点一次授权，并在钥匙串弹窗里选“始终允许”"
+                } else if !GrokBotQuotaBridge.isInstalled {
+                    grokBotAuthorizationResult = "本机没有 Grok Bot.app。请先安装并登录，再点授权"
                 } else {
-                    grokBotAuthorizationResult = "未授权，或 Grok Bot 尚未登录"
+                    grokBotAuthorizationResult = "没读到登录态。请打开 Grok Bot 并登录，再点授权；弹窗里选“允许”"
                 }
             }
         }
@@ -4200,6 +4215,37 @@ struct PanelView: View {
         }
     }
 
+    private func cardSettingsRow(for id: String) -> (name: String, tint: Color, isOn: Binding<Bool>)? {
+        switch id {
+        case "claude": return ("Claude", Theme.claude, $showClaude)
+        case "codex": return ("Codex", Theme.codex, $showCodex)
+        case "gemini": return ("Gemini / Antigravity", Theme.gemini, $showGemini)
+        case "cursor": return ("Cursor", Theme.cursor, $showCursor)
+        case "zed": return ("Zed", Theme.zed, $showZed)
+        case "sub2api": return ("Sub2API", Theme.sub2api, $showSub2API)
+        case "zai": return ("z.ai / GLM", Theme.zai, $showZai)
+        case "grok": return ("Grok", Theme.grok, $showGrok)
+        case "grok-bot": return ("Grok Bot", Theme.grokBot, $showGrokBot)
+        case "qoder": return ("Qoder Desktop", Theme.qoder, $showQoder)
+        case "qoderwork": return ("QoderWork", Theme.qoderwork, $showQoderWork)
+        case "qodercli": return ("Qoder CLI", Theme.qodercli, $showQoderCli)
+        case "hermes": return ("Hermes", Theme.hermes, $showHermes)
+        case "zcode": return ("ZCode", Theme.zcode, $showZcode)
+        case "mimocode": return ("MiMoCode", Theme.mimocode, $showMimoCode)
+        case "openclaw": return ("OpenClaw", Theme.openclaw, $showOpenClaw)
+        case "pi": return ("Pi", Theme.pi, $showPi)
+        case "prime_agent": return ("Prime Agent", Theme.primeAgent, $showPrimeAgent)
+        case "workbuddy": return ("WorkBuddy", Theme.workbuddy, $showWorkBuddy)
+        case "workbuddy-ai": return ("WorkBuddy Intl.", Theme.workbuddyAI, $showWorkBuddyAI)
+        case "deepseek_harness": return ("DeepSeek Harness", Theme.deepseekHarness, $showDeepSeekHarness)
+        case "opencode": return ("OpenCode", Theme.opencode, $showOpenCode)
+        case "qwencode": return ("Qwen Code", Theme.qwencode, $showQwenCode)
+        case "qwenwork": return ("千问办公", Theme.qwenwork, $showQwenWork)
+        case "kimicode": return ("Kimi Code", Theme.kimicode, $showKimiCode)
+        default: return nil
+        }
+    }
+
     func settingsRow(_ name: String, tint: Color, isOn: Binding<Bool>) -> some View {
         HStack(spacing: 6) {
             Circle().fill(tint.gradient).frame(width: 6, height: 6)
@@ -4224,6 +4270,92 @@ struct PanelView: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.primary.opacity(0.04))
         )
+    }
+
+    private func draggableCardSettingsRow(
+        id: String, name: String, tint: Color, isOn: Binding<Bool>
+    ) -> some View {
+        let dragging = draggingCardID == id
+        return HStack(spacing: 5) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(Theme.tTertiary)
+                .frame(width: 12, height: 22)
+                .contentShape(Rectangle())
+                .onDrag {
+                    draggingCardID = id
+                    cardOrderDraft = displayedCardOrder
+                    return NSItemProvider(object: id as NSString)
+                }
+            Circle().fill(tint.gradient).frame(width: 6, height: 6)
+                .shadow(color: tint.opacity(0.4), radius: 2)
+            Text(name)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.tPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .allowsTightening(true)
+                .layoutPriority(1)
+            Spacer(minLength: 4)
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .fixedSize()
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 8)
+        .frame(height: 34)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(dragging ? 0.10 : 0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(tint.opacity(dragging ? 0.45 : 0), lineWidth: 1)
+                )
+        )
+        .opacity(dragging ? 0.55 : 1)
+        .onDrop(
+            of: [UTType.plainText],
+            delegate: ToolCardReorderDrop(
+                targetID: id,
+                draggingID: $draggingCardID,
+                draft: $cardOrderDraft,
+                stored: $toolCardOrderRaw
+            )
+        )
+    }
+}
+
+private struct ToolCardReorderDrop: DropDelegate {
+    let targetID: String
+    @Binding var draggingID: String?
+    @Binding var draft: [String]?
+    @Binding var stored: String
+
+    func dropEntered(info: DropInfo) {
+        guard let from = draggingID, from != targetID else { return }
+        let current = draft ?? ToolCardOrder.parse(stored)
+        draft = ToolCardOrder.relocating(current, from: from, to: targetID)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        commit()
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func validateDrop(info: DropInfo) -> Bool { true }
+
+    private func commit() {
+        if let ids = draft {
+            stored = ToolCardOrder.encode(ids)
+        }
+        draggingID = nil
+        draft = nil
     }
 }
 

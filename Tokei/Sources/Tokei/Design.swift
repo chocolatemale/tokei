@@ -55,9 +55,13 @@ enum Theme {
     static let qwenwork = Color(red: 0.24, green: 0.72, blue: 0.68) // 千问青
     static let kimicode = Color(red: 0.20, green: 0.78, blue: 0.66) // 月石青
 
-    static let panelWidth: CGFloat = 322
-    static let cardRadius: CGFloat = 16
-    static let outerPad: CGFloat = 15
+    /// Layout scale vs the original 322 / 640 popover. Fonts stay the same for readability.
+    static let layoutScale: CGFloat = 0.88
+    static let panelWidth: CGFloat = (322 * layoutScale).rounded()
+    static let widePanelWidth: CGFloat = (640 * layoutScale).rounded()
+    static let cardRadius: CGFloat = (16 * layoutScale).rounded()
+    static let outerPad: CGFloat = (15 * layoutScale).rounded()
+    static let stackSpacing: CGFloat = (13 * layoutScale).rounded()
 
     static var brand: LinearGradient {
         LinearGradient(colors: [claude.opacity(0.8), claude],
@@ -79,7 +83,6 @@ enum Theme {
 struct Card<Content: View>: View {
     var tint: Color
     @ViewBuilder var content: () -> Content
-    @State private var hover = false
     var body: some View {
         content()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -105,11 +108,7 @@ struct Card<Content: View>: View {
                                        startPoint: .topLeading, endPoint: .bottomTrailing),
                         lineWidth: 0.75)
             )
-            .shadow(color: Color.black.opacity(hover ? 0.42 : 0.30),
-                    radius: hover ? 16 : 12, x: 0, y: hover ? 9 : 6)
-            .scaleEffect(hover ? 1.012 : 1)
-            .onHover { hover = $0 }
-            .animation(.easeOut(duration: 0.18), value: hover)
+            .compositingGroup()
     }
 }
 
@@ -281,22 +280,62 @@ struct RingMetricCell: View {
     }
 }
 
-// 大号成本焦点行。
+// 主指标行：token 总量 + 可选并排成本（同一视觉层级，钱右对齐）。
 struct CostHeadline: View {
     var value: String
     var caption: String
     var tint: Color
+    var cost: Double? = nil
+    var costCaption: String = "API 价"
+
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Text(value)
-                .font(.system(size: 23, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .contentTransition(.numericText())
-            Text(caption)
-                .font(.system(size: 10))
-                .foregroundStyle(Theme.tTertiary)
-            Spacer(minLength: 0)
+        if let cost, cost > 0 {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(value)
+                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .contentTransition(.numericText())
+                    Text(caption)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.tTertiary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(Self.money(cost))
+                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                        .foregroundStyle(tint)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .contentTransition(.numericText())
+                    Text(costCaption)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.tTertiary)
+                        .lineLimit(1)
+                }
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(value)
+                    .font(.system(size: 23, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                Text(caption)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.tTertiary)
+                Spacer(minLength: 0)
+            }
         }
+    }
+
+    private static func money(_ value: Double) -> String {
+        String(format: "$%.2f", value)
     }
 }
 

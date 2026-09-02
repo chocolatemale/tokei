@@ -1,6 +1,71 @@
 import Foundation
 
 /// Which tool cards the user has enabled in settings (matches `@AppStorage("show…")` flags).
+/// Canonical panel/share-card IDs in the shipping default order.
+enum ToolCardOrder {
+    static let defaultIDs: [String] = [
+        "claude", "codex", "gemini", "cursor", "zed", "sub2api", "zai",
+        "grok", "grok-bot", "qoder", "qoderwork", "qodercli", "hermes",
+        "zcode", "mimocode", "openclaw", "pi", "prime_agent",
+        "workbuddy", "workbuddy-ai", "deepseek_harness", "opencode",
+        "qwencode", "qwenwork", "kimicode",
+    ]
+
+    static func parse(_ stored: String) -> [String] {
+        let parts = stored.split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+        return normalized(parts)
+    }
+
+    static func encode(_ ids: [String]) -> String {
+        normalized(ids).joined(separator: ",")
+    }
+
+    static func normalized(_ raw: [String]) -> [String] {
+        let known = Set(defaultIDs)
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for id in raw where known.contains(id) && seen.insert(id).inserted {
+            ordered.append(id)
+        }
+        for id in defaultIDs where seen.insert(id).inserted {
+            ordered.append(id)
+        }
+        return ordered
+    }
+
+    static func move(_ ids: [String], id: String, by offset: Int) -> [String] {
+        var list = normalized(ids)
+        guard let index = list.firstIndex(of: id) else { return list }
+        let destination = index + offset
+        guard list.indices.contains(destination) else { return list }
+        list.swapAt(index, destination)
+        return list
+    }
+
+    /// Move `fromID` so it occupies `toID`'s current slot (insert-before after removal).
+    static func relocating(_ ids: [String], from fromID: String, to toID: String) -> [String] {
+        var list = normalized(ids)
+        guard fromID != toID,
+              let from = list.firstIndex(of: fromID),
+              list.contains(toID) else { return list }
+        let item = list.remove(at: from)
+        guard let to = list.firstIndex(of: toID) else { return normalized(ids) }
+        list.insert(item, at: to)
+        return list
+    }
+
+    static func sorted<T>(_ items: [T], id: (T) -> String, order: [String]) -> [T] {
+        let rank = Dictionary(
+            uniqueKeysWithValues: normalized(order).enumerated().map { ($0.element, $0.offset) }
+        )
+        return items.sorted { lhs, rhs in
+            (rank[id(lhs)] ?? Int.max) < (rank[id(rhs)] ?? Int.max)
+        }
+    }
+}
+
 struct UsageToolVisibility: Equatable {
     var claude = true
     var codex = true
@@ -90,9 +155,10 @@ enum UsageSummaryBuilder {
         usage: Usage,
         range: RangeKey,
         visibility: UsageToolVisibility,
+        order: [String] = ToolCardOrder.defaultIDs,
         updated: String? = nil
     ) -> String {
-        let lines = toolLines(usage: usage, range: range, visibility: visibility)
+        let lines = toolLines(usage: usage, range: range, visibility: visibility, order: order)
         var out: [String] = ["Tokei 用量 · \(range.label)"]
         if lines.isEmpty {
             out.append("（当前范围无可复制的用量）")
@@ -148,7 +214,8 @@ enum UsageSummaryBuilder {
     static func toolLines(
         usage: Usage,
         range: RangeKey,
-        visibility: UsageToolVisibility
+        visibility: UsageToolVisibility,
+        order: [String] = ToolCardOrder.defaultIDs
     ) -> [Line] {
         var lines: [Line] = []
 
@@ -311,16 +378,17 @@ enum UsageSummaryBuilder {
             appendTokenTool(&lines, id: "kimicode", name: "Kimi Code",
                             range: usage.kimicode.ranges.get(range), includesCost: false)
         }
-        return lines
+        return ToolCardOrder.sorted(lines, id: \.id, order: order)
     }
 
     static func line(
         forToolID id: String,
         usage: Usage,
         range: RangeKey,
-        visibility: UsageToolVisibility
+        visibility: UsageToolVisibility,
+        order: [String] = ToolCardOrder.defaultIDs
     ) -> Line? {
-        toolLines(usage: usage, range: range, visibility: visibility)
+        toolLines(usage: usage, range: range, visibility: visibility, order: order)
             .first { $0.id == id }
     }
 

@@ -8,9 +8,9 @@ enum RangeKey: String, CaseIterable, Identifiable {
         switch self {
         case .today: return "今日"
         case .yesterday: return "昨日"
-        case .week: return "本周"
-        case .lastWeek: return "上周"
-        case .month: return "本月"
+        case .week: return "7d"
+        case .lastWeek: return "14d"
+        case .month: return "30d"
         case .year: return "本年"
         case .all: return "全部"
         }

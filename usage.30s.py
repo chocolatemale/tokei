@@ -89,6 +89,13 @@ def _existing_dirs(paths):
 
 
 CLAUDE_DIR = os.path.join(HOME, ".claude", "projects")
+CLAUDE_DESKTOP_SESSION_DIRS = _path_candidates(
+    "TOKEI_CLAUDE_DESKTOP_DIRS",
+    os.path.join(HOME, "Library", "Application Support", "Claude", "claude-code-sessions"),
+    os.path.join(HOME, "Library", "Application Support", "Claude", "local-agent-mode-sessions"),
+    os.path.join(APPDATA, "Claude", "claude-code-sessions"),
+    os.path.join(APPDATA, "Claude", "local-agent-mode-sessions"),
+)
 CODEX_DIR = os.path.join(HOME, ".codex", "sessions")
 CODEX_ARCHIVED_DIR = os.path.join(HOME, ".codex", "archived_sessions")
 CODEX_AUTH = os.path.join(HOME, ".codex", "auth.json")
@@ -450,16 +457,18 @@ def nice_model(m: str) -> str:
 
 
 def range_bounds():
-    """返回今日/昨日/本周(周一起)/本月(1号起)/本年(1月1日起)的本地起点。"""
+    """今日/昨日；7d/14d/30d 为含今日的滚动窗口；本年从 1 月 1 日。"""
     now = datetime.now().astimezone()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     yesterday = today - timedelta(days=1)
-    week = today - timedelta(days=today.weekday())   # 周一 0
-    last_week_start = week - timedelta(days=7)       # 上周一
-    month = today.replace(day=1)
+    week = today - timedelta(days=6)          # 滚动 7 天（含今日）
+    last_week_start = today - timedelta(days=13)  # 滚动 14 天（含今日）
+    last_week_end = today + timedelta(days=1)
+    month = today - timedelta(days=29)        # 滚动 30 天（含今日）
     year = today.replace(month=1, day=1)
     return {"today": today, "yesterday": yesterday, "week": week,
-            "last_week": last_week_start, "last_week_end": week, "month": month, "year": year}
+            "last_week": last_week_start, "last_week_end": last_week_end,
+            "month": month, "year": year}
 
 
 def range_boundaries():
@@ -474,9 +483,9 @@ def range_boundaries():
     return {
         "today": {"start": day_s(b["today"]), "end": day_s(b["today"] + timedelta(days=1))},
         "yesterday": {"start": day_s(b["yesterday"]), "end": day_s(b["today"])},
-        "week": {"start": day_s(b["week"]), "end": day_s(b["week"] + timedelta(days=7))},
-        "last_week": {"start": day_s(b["last_week"]), "end": day_s(b["week"])},
-        "month": {"start": day_s(b["month"]), "end": day_s(next_month)},
+        "week": {"start": day_s(b["week"]), "end": day_s(b["today"] + timedelta(days=1))},
+        "last_week": {"start": day_s(b["last_week"]), "end": day_s(b["today"] + timedelta(days=1))},
+        "month": {"start": day_s(b["month"]), "end": day_s(b["today"] + timedelta(days=1))},
         "year": {"start": day_s(b["year"]), "end": day_s(next_year)},
         "all": {"start": None, "end": None},
     }
@@ -1121,13 +1130,46 @@ def _dedupe_claude_events(file_events):
     return selected
 
 
+def _claude_config_dir_projects():
+    roots = []
+    for part in os.environ.get("CLAUDE_CONFIG_DIR", "").split(","):
+        base = _expand_path(part)
+        if not base:
+            continue
+        projects = os.path.join(base, "projects")
+        roots.append(projects if os.path.isdir(projects) else base)
+    return roots
+
+
+def _claude_scan_roots():
+    return _existing_dirs(
+        _claude_config_dir_projects()
+        + _path_candidates("TOKEI_CLAUDE_DIR", CLAUDE_DIR)
+        + CLAUDE_DESKTOP_SESSION_DIRS
+    )
+
+
+def _claude_jsonl_files():
+    files = []
+    seen = set()
+    for root in _claude_scan_roots():
+        for path in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
+            real = os.path.realpath(path)
+            key = os.path.normcase(real)
+            if key not in seen and os.path.isfile(real):
+                seen.add(key)
+                files.append(real)
+    return files
+
+
 def scan_claude(bounds, cache):
     fc = cache.setdefault("claude", {})
     changed = False
     B = {k: {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0, "models": {}, "sessions": set()}
          for k in RANGE_KEYS}
     cur_file, cur_mtime = None, -1.0
-    if not os.path.isdir(CLAUDE_DIR):
+    jsonl_files = _claude_jsonl_files()
+    if not jsonl_files:
         if fc:
             fc.clear()
             cache["_dirty"] = True
@@ -1143,7 +1185,7 @@ def scan_claude(bounds, cache):
 
     stale = set(fc.keys())
 
-    for f in glob.glob(os.path.join(CLAUDE_DIR, "**", "*.jsonl"), recursive=True):
+    for f in jsonl_files:
         stale.discard(f)
         try:
             st = os.stat(f)
@@ -2429,10 +2471,26 @@ def _codex_session_meta(path, max_lines=20, max_line_bytes=2 * 1024 * 1024):
     return None, None
 
 
+def _codex_home_dirs():
+    homes = []
+    configured = os.environ.get("CODEX_HOME", "").strip()
+    if configured:
+        homes.append(_expand_path(configured))
+    homes.append(os.path.join(HOME, ".codex"))
+    roots = []
+    for home in homes:
+        if not home:
+            continue
+        roots.append(os.path.join(home, "sessions"))
+        roots.append(os.path.join(home, "archived_sessions"))
+    return roots
+
+
 def _codex_rollout_files():
     roots = _existing_dirs(
         _path_candidates("TOKEI_CODEX_DIR", CODEX_DIR) +
-        _path_candidates("TOKEI_CODEX_ARCHIVED_DIR", CODEX_ARCHIVED_DIR)
+        _path_candidates("TOKEI_CODEX_ARCHIVED_DIR", CODEX_ARCHIVED_DIR) +
+        _codex_home_dirs()
     )
     files = []
     seen = set()
@@ -4645,6 +4703,7 @@ def _cursor_app_session(path=None, now_epoch=None):
     email = claims.get("email") if isinstance(claims.get("email"), str) else None
     return {
         "cookie": f"WorkosCursorSessionToken={user_id}%3A%3A{token}",
+        "token": token,
         "account": email.strip() if email and email.strip() else subject,
         "subject": subject,
         "user_id": user_id,
@@ -4657,11 +4716,12 @@ def _cursor_cookie_session(cookie):
         return None
     from urllib.parse import unquote
 
-    account = subject = user_id = None
+    account = subject = user_id = jwt_token = None
     for component in cookie.split(";"):
         name, separator, value = component.strip().partition("=")
         if separator and name == "WorkosCursorSessionToken":
             token = unquote(value).split("::")[-1]
+            jwt_token = token
             claims = _decode_jwt_claims(token) or {}
             subject = claims.get("sub") if isinstance(claims.get("sub"), str) else None
             user_id = subject.rsplit("|", 1)[-1] if subject else None
@@ -4670,6 +4730,7 @@ def _cursor_cookie_session(cookie):
             break
     return {
         "cookie": cookie.strip(),
+        "token": jwt_token,
         "account": account,
         "subject": subject,
         "user_id": user_id,
@@ -4754,7 +4815,7 @@ def _cursor_boundary_overlap(previous, current):
     return 0
 
 
-def _fetch_cursor_usage_events(session, now=None):
+def _fetch_cursor_usage_events(session, now=None, client_type=None):
     now = now or datetime.now().astimezone()
     start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
     headers = {"Cookie": session["cookie"], "Origin": "https://cursor.com"}
@@ -4762,15 +4823,18 @@ def _fetch_cursor_usage_events(session, now=None):
     expected_total = None
     completed = False
     for page_number in range(1, _CURSOR_USAGE_MAX_PAGES + 1):
+        body = {
+            "page": page_number,
+            "pageSize": _CURSOR_USAGE_PAGE_SIZE,
+            "startDate": str(int(start.timestamp() * 1000)),
+            "endDate": str(int(now.timestamp() * 1000)),
+        }
+        if client_type:
+            body["clientType"] = client_type
         payload = _provider_json_request(
             "https://cursor.com/api/dashboard/get-filtered-usage-events",
             headers=headers, method="POST", timeout=15, max_bytes=16 * 1024 * 1024,
-            body={
-                "page": page_number,
-                "pageSize": _CURSOR_USAGE_PAGE_SIZE,
-                "startDate": str(int(start.timestamp() * 1000)),
-                "endDate": str(int(now.timestamp() * 1000)),
-            })
+            body=body)
         reported = _provider_integer(payload.get("totalUsageEventsCount")) \
             if isinstance(payload, dict) else None
         if reported is not None and reported < 0:
@@ -5168,58 +5232,147 @@ def _grok_bot_usage_only_fallback():
     }
 
 
+def _sand_events_only(events):
+    if not isinstance(events, list):
+        return []
+    kinds = {
+        str(event.get("clientType") or "").lower()
+        for event in events if isinstance(event, dict)
+    }
+    if kinds - {"", "sand"}:
+        return [
+            event for event in events
+            if isinstance(event, dict) and str(event.get("clientType") or "").lower() == "sand"
+        ]
+    return [event for event in events if isinstance(event, dict)]
+
+
+def _cursor_jwt(session):
+    if not isinstance(session, dict):
+        return None
+    token = session.get("token")
+    if isinstance(token, str) and token.count(".") >= 2:
+        return token
+    cookie = session.get("cookie")
+    if not isinstance(cookie, str):
+        return None
+    from urllib.parse import unquote
+    for component in cookie.split(";"):
+        name, separator, value = component.strip().partition("=")
+        if separator and name == "WorkosCursorSessionToken":
+            jwt = unquote(value).split("::")[-1]
+            return jwt if jwt.count(".") >= 2 else None
+    return None
+
+
+def _fetch_sand_events_api2(session, now=None):
+    token = _cursor_jwt(session)
+    if not token:
+        return []
+    now = now or datetime.now().astimezone()
+    start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    start_ms = str(int(start.timestamp() * 1000))
+    end_ms = str(int(now.timestamp() * 1000))
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Connect-Protocol-Version": "1",
+        "x-cursor-client-type": "sand",
+        "x-ghost-mode": "true",
+    }
+    pages = []
+    expected = None
+    for page_number in range(1, _CURSOR_USAGE_MAX_PAGES + 1):
+        payload = _provider_json_request(
+            "https://api2.cursor.sh/aiserver.v1.DashboardService/GetFilteredUsageEvents",
+            headers=headers, method="POST", timeout=15, max_bytes=16 * 1024 * 1024,
+            body={
+                "page": page_number,
+                "pageSize": _CURSOR_USAGE_PAGE_SIZE,
+                "startDate": start_ms,
+                "endDate": end_ms,
+                "clientType": "sand",
+            })
+        events = payload.get("usageEventsDisplay") if isinstance(payload, dict) else None
+        if not isinstance(events, list):
+            break
+        reported = _provider_integer(payload.get("totalUsageEventsCount")) \
+            if isinstance(payload, dict) else None
+        if reported is not None:
+            expected = reported if expected is None else expected
+        if not events:
+            break
+        pages.append(events)
+        if len(events) < _CURSOR_USAGE_PAGE_SIZE:
+            break
+    raw = [event for page in pages for event in page]
+    return _sand_events_only(raw)
+
+
+def _fetch_sand_bundle_via_cursor(session):
+    cookie = session.get("cookie") if isinstance(session, dict) else None
+    if not isinstance(cookie, str) or not cookie:
+        return {}
+    headers = {"Cookie": cookie, "Origin": "https://cursor.com"}
+    sand_usage = None
+    try:
+        sand_usage = _provider_json_request(
+            "https://cursor.com/api/dashboard/get-sand-usage-status",
+            headers=headers, method="POST", body={})
+    except Exception:
+        sand_usage = None
+    events = []
+    try:
+        events = _sand_events_only(_fetch_sand_events_api2(session))
+    except Exception:
+        events = []
+    if not events:
+        try:
+            events = _sand_events_only(
+                _fetch_cursor_usage_events(session, client_type="sand"))
+        except Exception:
+            events = []
+    quota = _normalize_grok_bot_quota(
+        sand_usage, identity=session, source="cursor-sand-api")
+    usage = _normalize_cursor_usage_events(events) if events else None
+    if isinstance(usage, dict):
+        all_range = (usage.get("ranges") or {}).get("all")
+        if isinstance(all_range, dict):
+            all_range["coverage"] = "本年"
+        if not quota:
+            quota = {
+                "available": False,
+                "plan": None,
+                "account": None,
+                "windows": [],
+                "details": [],
+                "source": "cursor-sand-api",
+                "updated": int(datetime.now().timestamp()),
+                "stale": False,
+            }
+        quota["usage"] = usage
+    return quota or {}
+
+
 def fetch_grok_bot_quota(session=None):
-    native_fallback = _latest_cached_provider_quota(
+    session = session or _cursor_session()
+    if session:
+        marker = _provider_credential_marker("cursor-sand-v1", session["marker"])
+        cached = _cached_provider_quota("grok_bot", marker, _PROVIDER_QUOTA_TTL)
+        if cached:
+            return cached
+        quota = _fetch_sand_bundle_via_cursor(session)
+        if quota:
+            _save_provider_quota_cache("grok_bot", marker, quota)
+            return quota
+        fallback = _cached_provider_quota(
+            "grok_bot", marker, _PROVIDER_QUOTA_FALLBACK_TTL, stale=True)
+        if fallback:
+            return fallback
+    return _latest_cached_provider_quota(
         "grok_bot", _PROVIDER_QUOTA_FALLBACK_TTL, stale=True) \
         or _grok_bot_usage_only_fallback()
-    if session is None:
-        account_id = _grok_bot_active_account_id()
-        authorization_generation = _grok_bot_authorization_generation()
-        if account_id and authorization_generation is not None:
-            native_marker = _provider_credential_marker(
-                "grok-bot-account-v1", account_id, authorization_generation)
-            cached = _cached_provider_quota(
-                "grok_bot", native_marker, _PROVIDER_QUOTA_TTL)
-            if cached:
-                return cached
-            native_fallback = _cached_provider_quota(
-                "grok_bot", native_marker, _PROVIDER_QUOTA_FALLBACK_TTL, stale=True) \
-                or native_fallback
-            recent_attempt = _provider_quota_recent_attempt_result(
-                "grok_bot", native_marker, _PROVIDER_QUOTA_TTL)
-            if recent_attempt == "empty":
-                return {}
-            if recent_attempt is None:
-                payload = _grok_bot_helper_sand_usage()
-                if payload is not None:
-                    quota = _grok_bot_provider_data(
-                        payload, updated=payload.get("updated"))
-                    if quota:
-                        _save_provider_quota_cache("grok_bot", native_marker, quota)
-                        return quota
-                    if payload.get("quotaFetched") is True or "quotaFetched" not in payload:
-                        _save_provider_quota_attempt(
-                            "grok_bot", native_marker, result="empty")
-                        return {}
-                _save_provider_quota_attempt("grok_bot", native_marker)
-
-    session = session or _cursor_session()
-    if not session:
-        return native_fallback
-    marker = _provider_credential_marker("cursor-usage-v1", session["marker"])
-    cached = _cached_provider_quota("grok_bot", marker, _PROVIDER_QUOTA_TTL)
-    if cached:
-        return cached
-    cursor_quota = fetch_cursor_quota(session, force=True)
-    cached = _cached_provider_quota("grok_bot", marker, _PROVIDER_QUOTA_TTL)
-    if cached:
-        return cached
-    quota = _grok_bot_quota_from_cursor(cursor_quota)
-    if quota:
-        _save_provider_quota_cache("grok_bot", marker, quota)
-        return quota
-    return _cached_provider_quota(
-        "grok_bot", marker, _PROVIDER_QUOTA_FALLBACK_TTL, stale=True) or native_fallback
 
 
 def scan_grok_bot_quota():
@@ -10128,7 +10281,7 @@ def update_prices():
 def _scan_local_models():
     """扫描本地所有日志,收集出现过的模型名。"""
     models = set()
-    for f in glob.glob(os.path.join(CLAUDE_DIR, "**", "*.jsonl"), recursive=True):
+    for f in _claude_jsonl_files():
         try:
             with open(f, encoding="utf-8", errors="ignore") as fh:
                 for line in fh:

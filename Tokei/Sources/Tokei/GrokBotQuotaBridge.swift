@@ -71,6 +71,10 @@ enum GrokBotQuotaBridge {
         return false
     }
 
+    static var isInstalled: Bool {
+        grokBotInfoPlistPaths.contains { FileManager.default.fileExists(atPath: $0) }
+    }
+
     static func authorize() -> Bool {
         updateAuthorizationMarker(enabled: false)
         guard credential(
@@ -474,13 +478,16 @@ enum GrokBotQuotaBridge {
         return encoded + machineID
     }
 
-    private static var grokBotClientVersion: String {
-        let candidates = [
+    private static var grokBotInfoPlistPaths: [String] {
+        [
             "/Applications/Grok Bot.app/Contents/Info.plist",
             FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Applications/Grok Bot.app/Contents/Info.plist").path,
         ]
-        for path in candidates {
+    }
+
+    private static var grokBotClientVersion: String {
+        for path in grokBotInfoPlistPaths {
             guard let info = NSDictionary(contentsOfFile: path),
                   let version = info["CFBundleShortVersionString"] as? String,
                   version.range(of: #"^\d+\.\d+\.\d+$"#,
@@ -583,5 +590,9 @@ enum GrokBotQuotaBridge {
         } catch {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    static func clearAuthorizationMarker() {
+        updateAuthorizationMarker(enabled: false)
     }
 }

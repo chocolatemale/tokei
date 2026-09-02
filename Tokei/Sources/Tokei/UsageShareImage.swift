@@ -14,10 +14,11 @@ enum UsageShareImage {
         usage: Usage,
         range: RangeKey,
         visibility: UsageToolVisibility,
+        order: [String] = ToolCardOrder.defaultIDs,
         updated: String? = nil
     ) -> NSImage? {
         let lines = UsageSummaryBuilder.toolLines(
-            usage: usage, range: range, visibility: visibility
+            usage: usage, range: range, visibility: visibility, order: order
         )
         return renderView(
             UsageShareOverviewView(
@@ -34,9 +35,10 @@ enum UsageShareImage {
         usage: Usage,
         range: RangeKey,
         visibility: UsageToolVisibility,
+        order: [String] = ToolCardOrder.defaultIDs,
         updated: String? = nil
     ) -> Data? {
-        png(from: render(usage: usage, range: range, visibility: visibility, updated: updated))
+        png(from: render(usage: usage, range: range, visibility: visibility, order: order, updated: updated))
     }
 
     @MainActor
@@ -45,10 +47,11 @@ enum UsageShareImage {
         usage: Usage,
         range: RangeKey,
         visibility: UsageToolVisibility,
+        order: [String] = ToolCardOrder.defaultIDs,
         updated: String? = nil
     ) -> Bool {
         writeToPasteboard(
-            render(usage: usage, range: range, visibility: visibility, updated: updated)
+            render(usage: usage, range: range, visibility: visibility, order: order, updated: updated)
         )
     }
 
@@ -187,7 +190,8 @@ struct UsageShareOverviewView: View {
                 CostHeadline(
                     value: Fmt.human(totals.tokens),
                     caption: "\(range.label) 总量",
-                    tint: Theme.claude
+                    tint: Theme.claude,
+                    cost: totals.cost
                 )
             }
 
@@ -196,10 +200,6 @@ struct UsageShareOverviewView: View {
                 alignment: .leading,
                 spacing: 9
             ) {
-                if totals.cost > 0 {
-                    MetricCell(icon: "dollarsign.circle", label: "≈成本",
-                               value: String(format: "$%.2f", totals.cost), tint: Theme.claude)
-                }
                 MetricCell(icon: "square.grid.2x2", label: "工具",
                            value: "\(totals.tools)", tint: Theme.codex)
                 if totals.sessions > 0 {
@@ -336,7 +336,8 @@ private func nativeToolCard(
         }
 
         if let tokens = line.tokens, tokens > 0 {
-            CostHeadline(value: Fmt.human(tokens), caption: "\(rangeLabel) 总量", tint: tint)
+            CostHeadline(value: Fmt.human(tokens), caption: "\(rangeLabel) 总量", tint: tint,
+                         cost: line.cost)
         }
 
         LazyVGrid(
@@ -344,10 +345,6 @@ private func nativeToolCard(
             alignment: .leading,
             spacing: 8
         ) {
-            if let cost = line.cost, cost > 0 {
-                MetricCell(icon: "dollarsign.circle", label: "≈成本",
-                           value: String(format: "$%.2f", cost), tint: tint)
-            }
             if let hit = line.hit, hit > 0 {
                 RingMetricCell(value: hit, label: "Cache Hit", tint: tint)
             }

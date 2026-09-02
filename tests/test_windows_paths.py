@@ -1,10 +1,14 @@
 import os
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
-from test_codex_limits import USAGE
+try:
+    from .test_codex_limits import USAGE
+except ImportError:
+    from test_codex_limits import USAGE
 
 
 class WindowsPathDiscoveryTests(unittest.TestCase):
@@ -21,6 +25,32 @@ class WindowsPathDiscoveryTests(unittest.TestCase):
                     "TOKEI_TEST_PATHS", "$TOKEI_TEST_ROOT/second")
 
         self.assertEqual(paths, [os.path.abspath(first), os.path.abspath(second)])
+
+    def test_codex_home_adds_sessions_and_archived(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex-home"
+            (home / "sessions").mkdir(parents=True)
+            (home / "archived_sessions").mkdir()
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(home)}), \
+                    mock.patch.object(USAGE, "HOME", tmp):
+                roots = USAGE._codex_home_dirs()
+            self.assertIn(str(home / "sessions"), roots)
+            self.assertIn(str(home / "archived_sessions"), roots)
+
+    def test_rolling_7_14_30_windows_include_today(self):
+        bounds = USAGE.range_bounds()
+        today = bounds["today"].date()
+        self.assertEqual((today - bounds["week"].date()).days, 6)
+        self.assertEqual((today - bounds["last_week"].date()).days, 13)
+        self.assertEqual((today - bounds["month"].date()).days, 29)
+        today_keys = USAGE.classify_date(today, bounds)
+        self.assertIn("week", today_keys)
+        self.assertIn("last_week", today_keys)
+        self.assertIn("month", today_keys)
+        ten_days_ago = USAGE.classify_date(today - timedelta(days=10), bounds)
+        self.assertNotIn("week", ten_days_ago)
+        self.assertIn("last_week", ten_days_ago)
+        self.assertIn("month", ten_days_ago)
 
     def test_appdata_candidates_feed_each_supported_discovery_layer(self):
         with tempfile.TemporaryDirectory() as tmp:

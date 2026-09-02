@@ -70,7 +70,7 @@ struct UsageSummaryBuilderCheck {
         let weekText = UsageSummaryBuilder.text(
             usage: usage, range: .week, visibility: allVisible, updated: nil
         )
-        try expect(weekText.contains("Tokei 用量 · 本周"), "week label: \(weekText)")
+        try expect(weekText.contains("Tokei 用量 · 7d"), "week label: \(weekText)")
         try expect(weekText.contains("$3.00"), "week claude cost: \(weekText)")
 
         let lines = UsageSummaryBuilder.toolLines(
@@ -79,6 +79,43 @@ struct UsageSummaryBuilderCheck {
         try expect(lines.map(\.name) == ["Claude Code", "Codex"],
                    "tool order/names: \(lines.map(\.name))")
         try expect(lines.map(\.id) == ["claude", "codex"], "tool ids: \(lines.map(\.id))")
+
+        try expect(ToolCardOrder.parse("") == ToolCardOrder.defaultIDs, "empty storage uses default order")
+        try expect(
+            ToolCardOrder.parse("bogus,codex,claude,codex")
+                .prefix(2).map { $0 } == ["codex", "claude"],
+            "parse should drop unknown ids, keep first occurrence, then fill defaults"
+        )
+        try expect(ToolCardOrder.parse("codex,claude").first == "codex", "explicit order is kept")
+        try expect(
+            ToolCardOrder.move(["claude", "codex"], id: "claude", by: 1) ==
+                ToolCardOrder.normalized(["codex", "claude"]),
+            "move claude down should swap with codex"
+        )
+        try expect(
+            ToolCardOrder.move(["claude", "codex"], id: "claude", by: -1).first == "claude",
+            "move past the start should no-op"
+        )
+        try expect(
+            ToolCardOrder.relocating(["claude", "codex", "gemini"], from: "claude", to: "gemini")
+                .prefix(3).map { $0 } == ["codex", "claude", "gemini"],
+            "drag claude onto gemini inserts before gemini"
+        )
+        try expect(
+            ToolCardOrder.relocating(["claude", "codex", "gemini"], from: "gemini", to: "claude")
+                .prefix(3).map { $0 } == ["gemini", "claude", "codex"],
+            "drag gemini onto claude inserts before claude"
+        )
+        try expect(
+            ToolCardOrder.relocating(["claude", "codex"], from: "claude", to: "claude")
+                == ToolCardOrder.normalized(["claude", "codex"]),
+            "drop on self is a no-op"
+        )
+        let reordered = UsageSummaryBuilder.toolLines(
+            usage: usage, range: .today, visibility: allVisible, order: ["codex", "claude"]
+        )
+        try expect(reordered.map(\.id) == ["codex", "claude", "gemini"],
+                   "custom order should lead, remaining visible tools follow: \(reordered.map(\.id))")
         try expect(lines[0].cost == 1.25, "claude cost value")
         try expect(lines[0].tokens == 1350, "claude tokens 1000+200+100+50")
         try expect(lines[0].input == 1000, "claude input detail")

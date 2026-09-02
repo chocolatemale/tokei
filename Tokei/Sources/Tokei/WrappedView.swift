@@ -40,8 +40,8 @@ enum WrappedPeriod: String, CaseIterable {
     var label: String {
         switch self {
         case .day: return "今日"
-        case .week: return "本周"
-        case .month: return "本月"
+        case .week: return "7d"
+        case .month: return "30d"
         case .year: return "今年"
         case .all: return "全部"
         }

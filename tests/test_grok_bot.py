@@ -149,28 +149,40 @@ class GrokBotTests(unittest.TestCase):
         fetch_native.assert_called_once_with()
         fetch_cursor.assert_not_called()
 
-    def test_native_grok_bot_login_is_preferred_and_cached(self):
-        reset = datetime.now().astimezone() + timedelta(days=7)
-        payload = {
+    def test_cursor_login_is_used_for_grok_bot_like_openusage(self):
+        session = {"cookie": "WorkosCursorSessionToken=user%3A%3Atoken", "marker": "m1"}
+        sand = {
             "hasNonZeroIncludedLimit": True,
             "usagePercent": 37.5,
-            "nextResetTimestampUtc": int(reset.timestamp()),
             "grokPlanLabel": "X Premium+",
         }
+        now = datetime.now().astimezone()
+        events = [{
+            "timestamp": str(int(now.timestamp() * 1000)),
+            "model": "grok-code-fast-1",
+            "clientType": "sand",
+            "tokenUsage": {"inputTokens": 10, "outputTokens": 5, "totalCents": 20},
+        }, {
+            "timestamp": str(int(now.timestamp() * 1000)),
+            "model": "cursor-small",
+            "clientType": "cursor",
+            "tokenUsage": {"inputTokens": 999, "outputTokens": 999, "totalCents": 999},
+        }]
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(USAGE, "PROVIDER_QUOTA_CACHE", str(Path(tmp) / "quota.json")), \
-                mock.patch.object(USAGE, "_grok_bot_active_account_id", return_value="a" * 64), \
-                mock.patch.object(USAGE, "_grok_bot_authorization_generation", return_value=1), \
-                mock.patch.object(USAGE, "_grok_bot_helper_sand_usage", return_value=payload) as helper, \
-                mock.patch.object(USAGE, "_cursor_session") as cursor_session:
+                mock.patch.object(USAGE, "_cursor_session", return_value=session), \
+                mock.patch.object(USAGE, "_provider_json_request", return_value=sand), \
+                mock.patch.object(USAGE, "_fetch_sand_events_api2", return_value=events) as fetch_events, \
+                mock.patch.object(USAGE, "_grok_bot_helper_sand_usage") as helper:
             first = USAGE.fetch_grok_bot_quota()
             second = USAGE.fetch_grok_bot_quota()
 
+        self.assertEqual(first["source"], "cursor-sand-api")
         self.assertEqual(first["windows"][0]["used_pct"], 37.5)
-        self.assertEqual(first["source"], "grok-bot-api")
+        self.assertEqual(first["usage"]["ranges"]["today"]["tokens"], 15)
         self.assertEqual(second, first)
-        helper.assert_called_once_with()
-        cursor_session.assert_not_called()
+        fetch_events.assert_called_once()
+        helper.assert_not_called()
 
     def test_active_account_id_comes_from_plaintext_account_index(self):
         account_id = "b" * 64
@@ -186,17 +198,14 @@ class GrokBotTests(unittest.TestCase):
 
         self.assertEqual(parsed, account_id)
 
-    def test_native_auth_failure_is_backed_off_for_five_minutes(self):
+    def test_no_cursor_session_does_not_touch_grok_bot_keychain_helper(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(USAGE, "PROVIDER_QUOTA_CACHE", str(Path(tmp) / "quota.json")), \
-                mock.patch.object(USAGE, "_grok_bot_active_account_id", return_value="c" * 64), \
-                mock.patch.object(USAGE, "_grok_bot_authorization_generation", return_value=2), \
-                mock.patch.object(USAGE, "_grok_bot_helper_sand_usage", return_value=None) as helper, \
-                mock.patch.object(USAGE, "_cursor_session", return_value=None):
-            self.assertEqual(USAGE.fetch_grok_bot_quota(), {})
+                mock.patch.object(USAGE, "_cursor_session", return_value=None), \
+                mock.patch.object(USAGE, "_grok_bot_helper_sand_usage") as helper:
             self.assertEqual(USAGE.fetch_grok_bot_quota(), {})
 
-        helper.assert_called_once_with()
+        helper.assert_not_called()
 
     def test_recent_usage_cache_survives_missing_authorization_marker(self):
         now = datetime.now().astimezone().replace(microsecond=0)
@@ -258,23 +267,21 @@ class GrokBotTests(unittest.TestCase):
         self.assertTrue(quota["stale"])
         self.assertEqual(quota["usage"]["ranges"]["today"]["tokens"], 120)
 
-    def test_confirmed_empty_native_quota_does_not_fall_back_to_cursor(self):
-        payload = {"hasNonZeroIncludedLimit": False, "usagePercent": 0}
+    def test_empty_cursor_sand_bundle_does_not_use_grok_bot_keychain(self):
+        session = {"cookie": "WorkosCursorSessionToken=x", "marker": "m"}
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(USAGE, "PROVIDER_QUOTA_CACHE", str(Path(tmp) / "quota.json")), \
-                mock.patch.object(USAGE, "_grok_bot_active_account_id", return_value="d" * 64), \
-                mock.patch.object(USAGE, "_grok_bot_authorization_generation", return_value=3), \
-                mock.patch.object(USAGE, "_grok_bot_helper_sand_usage", return_value=payload) as helper, \
-                mock.patch.object(USAGE, "_cursor_session") as cursor_session:
-            self.assertEqual(USAGE.fetch_grok_bot_quota(), {})
+                mock.patch.object(USAGE, "_cursor_session", return_value=session), \
+                mock.patch.object(USAGE, "_fetch_sand_bundle_via_cursor", return_value={}) as fetch, \
+                mock.patch.object(USAGE, "_grok_bot_helper_sand_usage") as helper:
             self.assertEqual(USAGE.fetch_grok_bot_quota(), {})
 
-        helper.assert_called_once_with()
-        cursor_session.assert_not_called()
+        fetch.assert_called_once_with(session)
+        helper.assert_not_called()
 
     def test_quota_failure_uses_one_hour_stale_cache(self):
-        session = {"marker": "cursor-marker"}
-        marker = USAGE._provider_credential_marker("cursor-usage-v1", session["marker"])
+        session = {"cookie": "WorkosCursorSessionToken=x", "marker": "cursor-marker"}
+        marker = USAGE._provider_credential_marker("cursor-sand-v1", session["marker"])
         cached = {
             "available": True,
             "windows": [{"id": "grok-bot-period", "title": "本周期额度",
@@ -288,10 +295,10 @@ class GrokBotTests(unittest.TestCase):
                 "grok_bot", marker, cached,
                 fetched_at=int(datetime.now().timestamp()) - 10 * 60,
             )
-            with mock.patch.object(USAGE, "fetch_cursor_quota", return_value={}) as fetch:
+            with mock.patch.object(USAGE, "_fetch_sand_bundle_via_cursor", return_value={}) as fetch:
                 quota = USAGE.fetch_grok_bot_quota(session)
 
-        fetch.assert_called_once_with(session, force=True)
+        fetch.assert_called_once_with(session)
         self.assertTrue(quota["stale"])
         self.assertEqual(quota["source"], "cache")
 

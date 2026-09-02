@@ -7,6 +7,14 @@ final class Store: ObservableObject {
     @Published var localUsage: Usage?
     @Published var allDevicesUsage: Usage?
     @Published var lastUpdated: String = "加载中…"
+    @Published var lastRefreshAt: Date?
+    @Published var isRefreshing = false
+    static let refreshInterval: TimeInterval = 30
+
+    func secondsUntilNextRefresh(now: Date = Date()) -> Int {
+        guard let lastRefreshAt else { return 0 }
+        return max(0, Int(ceil(Self.refreshInterval - now.timeIntervalSince(lastRefreshAt))))
+    }
     @Published var loadError: String?
     @Published var peers: [PeerDevice] = []
     @Published var syncing = false
@@ -64,6 +72,7 @@ final class Store: ObservableObject {
             return
         }
         refreshInFlight = true
+        isRefreshing = true
         performRefresh()
     }
 
@@ -113,8 +122,10 @@ final class Store: ObservableObject {
             }
             self.allDevicesUsage = allDevices
             self.applyDisplayMode(updateStatusTitle: false)
+            let now = Date()
+            self.lastRefreshAt = now
             let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
-            self.lastUpdated = "更新 " + f.string(from: Date())
+            self.lastUpdated = "更新 " + f.string(from: now)
             (NSApp.delegate as? AppDelegate)?.updateStatusTitle()
             if !self.refreshPending && !self.dashboardPrewarmStarted {
                 self.dashboardPrewarmStarted = true
@@ -130,6 +141,7 @@ final class Store: ObservableObject {
             performRefresh()
         } else {
             refreshInFlight = false
+            isRefreshing = false
         }
     }
 
@@ -256,6 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         // 启动时先把 Qoder IDE / Grok / 千问办公额度开关落盘到 config.json,
         // 确保随后的 refresh() 触发的 Python 扫描能读到正确配置。
+        KeychainACLRevoker.revokeOnceOnLaunch()
         PanelView.syncQoderIdeConfigOnLaunch()
         PanelView.syncGrokLiveQuotaConfigOnLaunch()
         PanelView.syncQwenWorkQuotaConfigOnLaunch()
@@ -523,6 +536,12 @@ enum Icon {
         }
         exit(0)
     }
+}
+
+if CommandLine.arguments.contains("--revoke-keychain-acl") {
+    let revoked = KeychainACLRevoker.revokeTokeiTrust()
+    print(revoked.isEmpty ? "none" : revoked.joined(separator: "\n"))
+    exit(0)
 }
 
 if GrokBotQuotaBridge.runIfRequested() {

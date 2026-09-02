@@ -1,10 +1,15 @@
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
-from test_codex_limits import USAGE
+try:
+    from .test_codex_limits import USAGE
+except ImportError:
+    from test_codex_limits import USAGE
 
 
 def assistant(message_id, input_tokens, output_tokens=0, request_id=None, event_id=None,
@@ -23,6 +28,37 @@ def assistant(message_id, input_tokens, output_tokens=0, request_id=None, event_
         },
     }
     return record
+
+
+class ClaudeScanRootTests(unittest.TestCase):
+    def test_scan_roots_include_desktop_and_config_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            desktop = Path(tmp) / "Claude" / "claude-code-sessions"
+            local_agent = Path(tmp) / "Claude" / "local-agent-mode-sessions"
+            config = Path(tmp) / "alt-config" / "projects"
+            desktop.mkdir(parents=True)
+            local_agent.mkdir(parents=True)
+            config.mkdir(parents=True)
+            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(Path(tmp) / "alt-config")}), \
+                    mock.patch.object(USAGE, "CLAUDE_DESKTOP_SESSION_DIRS", [
+                        str(desktop), str(local_agent)]):
+                roots = set(USAGE._claude_scan_roots())
+            self.assertIn(str(desktop.resolve()), roots)
+            self.assertIn(str(local_agent.resolve()), roots)
+            self.assertIn(str(config.resolve()), roots)
+
+    def test_jsonl_files_merge_cli_and_desktop_without_dupes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = Path(tmp) / "cli"
+            desk = Path(tmp) / "desk"
+            cli.mkdir()
+            desk.mkdir()
+            (cli / "a.jsonl").write_text("{}\n", encoding="utf-8")
+            (desk / "b.jsonl").write_text("{}\n", encoding="utf-8")
+            with mock.patch.object(USAGE, "_claude_scan_roots", return_value=[str(cli), str(desk)]):
+                files = USAGE._claude_jsonl_files()
+            names = sorted(Path(path).name for path in files)
+            self.assertEqual(names, ["a.jsonl", "b.jsonl"])
 
 
 class ClaudeDedupTests(unittest.TestCase):
